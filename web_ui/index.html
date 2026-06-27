@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ollama Agentic Workspace</title>
+  <link rel="stylesheet" href="/styles.css?v=20260627-1">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="status-dot"></span>
+        <div>
+          <strong>Ollama Agentic Workspace</strong>
+          <span id="workspacePath">Loading workspace...</span>
+        </div>
+      </div>
+      <div class="top-actions">
+        <select id="connMode" title="Connection mode">
+          <option>🖥️ Local Ollama</option>
+          <option>🔑 Custom API</option>
+        </select>
+        <select id="modelSelect" title="Model"></select>
+        <button id="refreshModels" type="button" title="Refresh Ollama models">Refresh</button>
+        <button id="clearChat" type="button">Clear</button>
+      </div>
+    </header>
+
+    <section id="customApiPanel" class="custom-api-panel">
+      <label>API Base URL <input id="topCustomApiUrl" placeholder="https://api.openai.com/v1"></label>
+      <label>API Key <input id="topCustomApiKey" type="password" placeholder="sk-..."></label>
+      <button id="saveTopCustomApi" type="button">Save API</button>
+    </section>
+
+    <main class="layout">
+      <aside class="workspace-panel">
+        <section class="panel-head">
+          <div>
+            <h1>Workspace</h1>
+            <p>Project files and generated artifacts</p>
+          </div>
+          <button id="scanBtn" type="button">Scan</button>
+        </section>
+
+        <section class="path-row">
+          <input id="workspaceInput" placeholder="C:\path\to\project">
+          <button id="browseWorkspace" type="button">Browse</button>
+          <button id="openWorkspace" type="button">Open</button>
+        </section>
+
+        <section class="stats">
+          <div><strong id="fileCount">0</strong><span>files</span></div>
+          <div><strong id="totalKb">0KB</strong><span>size</span></div>
+          <div><strong id="typeCount">0</strong><span>types</span></div>
+        </section>
+
+        <nav class="tabs">
+          <button class="tab active" data-tab="files">Files</button>
+          <button class="tab" data-tab="skills">Skills</button>
+          <button class="tab" data-tab="prompts">Prompts</button>
+          <button class="tab" data-tab="settings">Settings</button>
+        </nav>
+
+        <section id="filesTab" class="tab-page active">
+          <input id="fileSearch" class="search" placeholder="Filter files...">
+          <div id="fileList" class="file-list"></div>
+        </section>
+
+        <section id="skillsTab" class="tab-page">
+          <div class="tab-actions">
+            <button id="testSkills" type="button">Test skills</button>
+            <span id="skillsStatus">Not tested</span>
+          </div>
+          <div id="skillsList" class="skills-list"></div>
+        </section>
+
+        <section id="promptsTab" class="tab-page prompts">
+          <input id="promptSearch" class="search" placeholder="Filter prompts...">
+          <div id="promptsList" class="prompts-list"></div>
+          <div class="prompt-editor">
+            <div class="prompt-editor-head">
+              <strong id="selectedPromptName">Custom system prompt</strong>
+              <button id="savePrompt" type="button">Use edited prompt</button>
+            </div>
+            <textarea id="systemPromptEditor" spellcheck="false"></textarea>
+          </div>
+        </section>
+
+        <section id="settingsTab" class="tab-page settings">
+          <label>Temperature <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.4"></label>
+          <label><input id="thinking" type="checkbox"> Deep thinking</label>
+          <label><input id="autoContinue" type="checkbox"> Auto-continue incomplete generations</label>
+          <label><input id="memoryEnabled" type="checkbox"> Compact long chat memory</label>
+          <label>Context token budget <input id="contextTokenBudget" type="number" min="4000" max="200000" step="1000" value="24000"></label>
+          <label>Response token budget <input id="responseTokenBudget" type="number" min="512" max="64000" step="512" value="8192"></label>
+          <div class="settings-group">
+            <label><input id="tavilyEnabled" type="checkbox"> Tavily web search</label>
+            <label id="tavilyKeyRow">Tavily API Key <input id="tavilyApiKey" type="password" placeholder="tvly-..."></label>
+            <span id="tavilyStatus">Tavily is disabled</span>
+          </div>
+          <div class="memory-box">
+            <span id="memoryStats">Memory: loading...</span>
+            <button id="compactMemory" type="button">Compact now</button>
+          </div>
+          <label>Custom API URL <input id="customApiUrl" placeholder="https://api.openai.com/v1"></label>
+          <label>Custom API Key <input id="customApiKey" type="password" placeholder="optional"></label>
+          <button id="saveSettings" type="button">Save settings</button>
+        </section>
+      </aside>
+
+      <section class="editor-panel">
+        <div class="editor-head">
+          <div>
+            <h2 id="activeFile">No file selected</h2>
+            <span id="fileMeta">Choose a file from the workspace</span>
+          </div>
+          <div class="editor-actions">
+            <button id="downloadCode" type="button" disabled>Download</button>
+            <button id="attachFile" type="button" disabled>Ask AI</button>
+          </div>
+        </div>
+        <pre id="codePreview" class="code-preview"><code>Select a project file to preview its contents.</code></pre>
+      </section>
+
+      <aside class="agent-panel">
+        <section class="agent-head">
+          <div>
+            <h1>Agent</h1>
+            <p>Explanations, tool calls, and reports</p>
+          </div>
+        </section>
+        <section id="messages" class="messages"></section>
+        <form id="chatForm" class="composer">
+          <textarea id="promptInput" placeholder="Describe what you want the agent to do..."></textarea>
+          <button type="submit">Send</button>
+        </form>
+      </aside>
+    </main>
+  </div>
+  <div id="loadingOverlay" class="loading-overlay">
+    <div class="loader-card">
+      <div class="spinner"></div>
+      <strong>Agent is working</strong>
+      <span id="loadingText">Preparing...</span>
+    </div>
+  </div>
+  <script src="/app.js?v=20260627-1"></script>
+</body>
+</html>

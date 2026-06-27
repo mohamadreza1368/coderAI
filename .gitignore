@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# Build and release outputs
+build/
+dist/
+release/
+releases/
+*.exe
+*.spec.bak
+
+# Installer outputs
+*.msi
+*.iss
+Output/
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# Local runtime state
+.agents/
+.codex/
+agent_workspace/*
+!agent_workspace/.gitkeep
+
+# Secrets and environment files
+.env
+.env.*
+*.key
+*.pem
+
+# IDEs
+.vscode/
+.idea/
+
+# OS metadata
+Thumbs.db
+Desktop.ini
+.DS_Store
