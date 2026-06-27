@@ -125,6 +125,5 @@ When Tavily is disabled or no key is configured, the `web_search` and `extract_u
 
 ## Security Notes
 
-- Do not commit real API keys.
 - Tavily and Custom API keys are user-provided runtime settings.
 - Shell and Python execution tools run on the local machine inside the selected workspace. Only use this app with projects and prompts you trust.
