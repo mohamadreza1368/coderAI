@@ -41,7 +41,13 @@ For source development:
 - Windows
 - Python 3.12+
 - Ollama installed and running for Local Ollama mode
-- Optional: LiteLLM for more accurate token counting
+- Python packages from `requirements.txt`
+
+Install dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
 
 ## Running From Source
 
