@@ -4,6 +4,16 @@ Ollama Agentic Workspace is a local, browser-based coding agent UI for working w
 
 The app is built as a small Python HTTP server with a custom HTML/CSS/JavaScript frontend.
 
+## Download The App
+
+If you do not want to work with the source code or install Python, download the Windows executable from the GitHub Releases page:
+
+[Download from Releases](https://github.com/mohamadreza1368/coderAI/releases)
+
+Use the portable executable if you want the simplest option. The portable version is a single `.exe` file, so you can download it, run it, and start using the app without setting up a Python environment.
+
+The folder-based package may start faster and is usually better for future installer-style distribution, but it must be kept together with its included support files. For most users, the portable version is easier.
+
 ## Features
 
 - Local Ollama model support with automatic model discovery.
@@ -35,6 +45,11 @@ The app is built as a small Python HTTP server with a custom HTML/CSS/JavaScript
 ```
 
 ## Requirements
+
+For the portable release:
+
+- Windows
+- Ollama installed and running for Local Ollama mode, unless you use Custom API mode
 
 For source development:
 
