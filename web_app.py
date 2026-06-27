@@ -11,6 +11,7 @@ import json
 import mimetypes
 import os
 import socket
+import subprocess
 import sys
 import time
 import urllib.request
@@ -326,6 +327,7 @@ def _read_file(rel_path: str) -> dict:
 
 def _browse_local_folder(initial_dir: str = "") -> str | None:
     """Open a native folder picker on the machine running this local web server."""
+    start_dir = initial_dir if initial_dir and Path(initial_dir).exists() else str(Path.home())
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -333,14 +335,50 @@ def _browse_local_folder(initial_dir: str = "") -> str | None:
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
-        start_dir = initial_dir if initial_dir and Path(initial_dir).exists() else str(Path.home())
         selected = filedialog.askdirectory(
             parent=root,
             initialdir=start_dir,
             title="Select project folder",
         )
         root.destroy()
-        return selected or None
+        if selected:
+            return selected
+    except Exception:
+        pass
+
+    if os.name != "nt":
+        return None
+
+    script = r"""
+$initial = $args[0]
+$shell = New-Object -ComObject Shell.Application
+$folder = $shell.BrowseForFolder(0, "Select project folder", 0, $initial)
+if ($folder -and $folder.Self -and $folder.Self.Path) {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    Write-Output $folder.Self.Path
+}
+"""
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-STA",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+                start_dir,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
+        selected = result.stdout.strip().splitlines()
+        return selected[-1].strip() if selected else None
     except Exception:
         return None
 
@@ -966,7 +1004,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/browse":
                 picked = _browse_local_folder(data.get("initial_dir") or str(get_workspace()))
                 if not picked:
-                    _send_json(self, {"ok": False, "message": "No folder selected"}, 400)
+                    _send_json(self, {"ok": False, "cancelled": True, "message": "Folder selection was cancelled"})
                     return
                 ok, msg = set_workspace(picked)
                 _send_json(

@@ -313,10 +313,11 @@ async function browseWorkspace() {
       method: "POST",
       body: JSON.stringify({ initial_dir: $("workspaceInput").value.trim() }),
     });
+    if (data.cancelled) return;
     $("workspaceInput").value = data.path || data.workspace?.path || $("workspaceInput").value;
     renderState(await api("/api/state"));
   } catch (err) {
-    alert(err.message || "No folder selected");
+    alert(err.message || "Could not open the folder picker");
   } finally {
     setLoading(false);
   }
