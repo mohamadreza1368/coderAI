@@ -349,24 +349,50 @@ p, .editor-head span {
 }
 
 .settings {
-  padding: 12px;
+  padding: 10px;
   display: none;
-  gap: 10px;
+  gap: 8px;
+  overflow-y: auto;
+  min-height: 0;
+  align-content: start;
+  grid-template-rows: none;
 }
-.settings.active { display: grid; align-content: start; }
+.settings.active { display: grid; }
 .settings label {
   color: var(--muted);
   font-size: 12px;
   display: grid;
-  gap: 6px;
+  gap: 5px;
+}
+.settings > label {
+  padding: 7px 8px;
+  border: 1px solid rgba(36, 44, 58, .72);
+  background: rgba(11, 16, 23, .62);
+  border-radius: 7px;
+}
+.settings label:has(input[type="checkbox"]) {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+.settings input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.settings input[type="number"],
+.settings input[type="password"],
+.settings input[type="text"],
+.settings input:not([type]) {
+  height: 32px;
 }
 .settings-group {
   border: 1px solid var(--line);
   background: #0b1017;
   border-radius: 7px;
-  padding: 10px;
+  padding: 8px;
   display: grid;
-  gap: 9px;
+  gap: 7px;
 }
 .settings-group span {
   color: var(--muted);
