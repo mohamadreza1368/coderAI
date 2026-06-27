@@ -2,7 +2,7 @@
 
 Ollama Agentic Workspace is a local, browser-based coding agent UI for working with projects on your machine. It provides a three-pane workspace for browsing files, previewing or downloading generated code, and chatting with an agent that can inspect and edit the selected project through tool calls.
 
-The app is built as a small Python HTTP server with a custom HTML/CSS/JavaScript frontend. It can run directly from source or be packaged as a Windows executable with PyInstaller.
+The app is built as a small Python HTTP server with a custom HTML/CSS/JavaScript frontend.
 
 ## Features
 
@@ -17,7 +17,6 @@ The app is built as a small Python HTTP server with a custom HTML/CSS/JavaScript
 - Streaming chat responses and live generated-code preview.
 - Download button for generated or selected code.
 - Context compaction and LiteLLM-based token counting when available.
-- Portable Windows executable builds.
 
 ## Project Structure
 
@@ -32,8 +31,7 @@ The app is built as a small Python HTTP server with a custom HTML/CSS/JavaScript
 ├── web_ui/                     # Frontend HTML, CSS, and JavaScript
 ├── system_prompts/             # Markdown system prompts
 ├── skills/                     # Skill definitions
-├── agent_workspace/            # Default workspace when no project is selected
-└── dist/                       # Generated executable builds
+└── agent_workspace/            # Default workspace when no project is selected
 ```
 
 ## Requirements
@@ -44,22 +42,6 @@ For source development:
 - Python 3.12+
 - Ollama installed and running for Local Ollama mode
 - Optional: LiteLLM for more accurate token counting
-- Optional: PyInstaller for building executables
-
-The packaged executable does not require users to install Python.
-
-## Initial Release
-
-For the first public version, publish the generated Windows executable files as GitHub Release assets instead of committing them to the repository.
-
-Recommended initial release assets:
-
-```text
-OllamaAgentWorkspace.exe
-OllamaAgentWorkspacePortable.exe
-```
-
-The source repository ignores `dist/`, `release/`, `releases/`, and `*.exe` files so build artifacts stay out of normal commits. After building, upload the executable files to a release such as `v0.1.0`.
 
 ## Running From Source
 
@@ -104,38 +86,17 @@ Tavily is disabled by default. To enable web search:
 
 When Tavily is disabled or no key is configured, the `web_search` and `extract_url` tools are not exposed to the model.
 
-## Building Windows Executables
+## TODO
 
-Install PyInstaller:
-
-```powershell
-python -m pip install pyinstaller
-```
-
-Build the folder-based app:
-
-```powershell
-python -m PyInstaller --noconfirm --clean OllamaAgentWorkspace.spec
-```
-
-Build the single-file portable app:
-
-```powershell
-python -m PyInstaller --noconfirm --clean OllamaAgentWorkspacePortable.spec
-```
-
-Outputs:
-
-```text
-dist/OllamaAgentWorkspace/OllamaAgentWorkspace.exe
-dist/OllamaAgentWorkspacePortable.exe
-```
-
-The folder-based build is usually better as a base for a proper installer. The portable build is easier to copy, but starts more slowly because it extracts bundled files at launch.
+- Add automated tests for the agent runtime and tool execution layer.
+- Add persistent conversation memory with configurable limits.
+- Improve workspace indexing for larger projects.
+- Add richer skill validation and status reporting.
+- Add a safer approval flow for shell and Python execution tools.
+- Improve release packaging and distribution workflow.
 
 ## Development Notes
 
-- `web_app.py` supports PyInstaller by reading bundled assets from `sys._MEIPASS`.
 - `launcher.py` finds a free local port starting at `7864` and opens the browser automatically.
 - LiteLLM is used only for token counting. If it is unavailable, the app falls back to conservative character-based estimates.
 - `LITELLM_LOCAL_MODEL_COST_MAP=True` is set to prevent LiteLLM from trying to refresh its model-cost map from the internet.
