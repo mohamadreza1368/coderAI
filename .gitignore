@@ -15,6 +15,7 @@ dist/
 release/
 releases/
 *.exe
+*.spec
 *.spec.bak
 
 # Installer outputs
