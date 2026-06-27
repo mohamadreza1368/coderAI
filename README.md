@@ -116,6 +116,12 @@ When Tavily is disabled or no key is configured, the `web_search` and `extract_u
 - Add a safer approval flow for shell and Python execution tools.
 - Improve release packaging and distribution workflow.
 
+## License
+
+This project is licensed under the Apache License 2.0.
+
+Please retain the attribution in the `NOTICE` file when redistributing this project or derivative works.
+
 ## Development Notes
 
 - `launcher.py` finds a free local port starting at `7864` and opens the browser automatically.
