@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -349,6 +350,10 @@ def _browse_local_folder(initial_dir: str = "") -> str | None:
     if os.name != "nt":
         return None
 
+    powershell = _windows_powershell_path()
+    if not powershell:
+        return None
+
     script = r"""
 $initial = $args[0]
 $shell = New-Object -ComObject Shell.Application
@@ -361,7 +366,7 @@ if ($folder -and $folder.Self -and $folder.Self.Path) {
     try:
         result = subprocess.run(
             [
-                "powershell",
+                powershell,
                 "-NoProfile",
                 "-STA",
                 "-ExecutionPolicy",
@@ -381,6 +386,26 @@ if ($folder -and $folder.Self -and $folder.Self.Path) {
         return selected[-1].strip() if selected else None
     except Exception:
         return None
+
+
+def _windows_powershell_path() -> str | None:
+    """Return a stable PowerShell path for packaged Windows builds."""
+    candidates = []
+    for root in (os.environ.get("SystemRoot"), os.environ.get("WINDIR"), r"C:\Windows"):
+        if root:
+            candidates.append(Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+            candidates.append(Path(root) / "SysWOW64" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    for name in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(Path(found))
+    for candidate in candidates:
+        try:
+            if candidate.exists() and candidate.is_file():
+                return str(candidate)
+        except OSError:
+            continue
+    return None
 
 
 def _post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
