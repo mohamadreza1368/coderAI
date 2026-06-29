@@ -51,7 +51,7 @@ textarea { resize: none; padding: 10px; }
 
 .app-shell {
   display: grid;
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
   padding: 12px;
   gap: 10px;
@@ -125,9 +125,11 @@ textarea { resize: none; padding: 10px; }
 
 .layout {
   display: grid;
+  grid-row: 3;
   grid-template-columns: minmax(240px, 18vw) minmax(520px, 1fr) minmax(360px, 30vw);
   gap: 10px;
   min-height: 0;
+  height: 100%;
 }
 
 .workspace-panel,
@@ -644,7 +646,7 @@ body.loading .loading-overlay {
 @media (max-width: 1180px) {
   body { overflow: auto; }
   .app-shell { height: auto; min-height: 100%; }
-  .layout { grid-template-columns: 1fr; }
+  .layout { grid-template-columns: 1fr; height: auto; }
   .workspace-panel, .editor-panel, .agent-panel { min-height: 420px; }
   .top-actions { grid-template-columns: 1fr; }
   .custom-api-panel { grid-template-columns: 1fr; }
