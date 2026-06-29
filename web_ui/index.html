@@ -116,11 +116,15 @@
             <span id="fileMeta">Choose a file from the workspace</span>
           </div>
           <div class="editor-actions">
+            <span id="editorLanguage" class="editor-language">text</span>
             <button id="downloadCode" type="button" disabled>Download</button>
             <button id="attachFile" type="button" disabled>Ask AI</button>
           </div>
         </div>
-        <pre id="codePreview" class="code-preview"><code>Select a project file to preview its contents.</code></pre>
+        <div id="codeEditorWrap" class="code-editor-wrap empty">
+          <pre id="codeHighlight" class="code-highlight" aria-hidden="true"><code>Select a project file to preview its contents.</code></pre>
+          <textarea id="codeEditor" class="code-editor" spellcheck="false" wrap="off" placeholder="Select or generate code to edit it here." disabled></textarea>
+        </div>
       </section>
 
       <aside class="agent-panel">
@@ -145,6 +149,6 @@
       <span id="loadingText">Preparing...</span>
     </div>
   </div>
-  <script src="/app.js?v=20260629-1"></script>
+  <script src="/app.js?v=20260629-2"></script>
 </body>
 </html>

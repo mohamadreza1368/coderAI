@@ -3,6 +3,7 @@ const state = {
   activeFile: null,
   fileContent: "",
   generatedInfo: "txt",
+  editorDirty: false,
   workspaceLocked: false,
 };
 
@@ -58,15 +59,117 @@ function extensionForInfo(info) {
   return map[lang] || lang.replace(/[^a-z0-9]/g, "") || "txt";
 }
 
-function setCodePreview(title, meta, content, info = "txt") {
+function languageForInfo(info) {
+  const lang = String(info || "text").trim().split(/\s+/)[0].toLowerCase();
+  const map = {
+    py: "python",
+    python: "python",
+    js: "javascript",
+    javascript: "javascript",
+    jsx: "javascript",
+    ts: "typescript",
+    tsx: "typescript",
+    typescript: "typescript",
+    java: "java",
+    html: "html",
+    htm: "html",
+    css: "css",
+    json: "json",
+    md: "markdown",
+    markdown: "markdown",
+    sh: "shell",
+    bash: "shell",
+    shell: "shell",
+    ps1: "powershell",
+    powershell: "powershell",
+    sql: "sql",
+    yml: "yaml",
+    yaml: "yaml",
+  };
+  return map[lang] || "text";
+}
+
+function tokenClass(token, language) {
+  const keywordSets = {
+    python: "and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return True try while with yield self",
+    javascript: "await async break case catch class const continue debugger default delete do else export extends false finally for from function if import in instanceof let new null return static super switch this throw true try typeof undefined var void while yield",
+    typescript: "abstract any as async await boolean break case catch class const constructor continue declare default delete do else enum export extends false finally for from function if implements import in instanceof interface keyof let module namespace never new null number private protected public readonly return static string super switch this throw true try type typeof undefined unknown var void while yield",
+    java: "abstract assert boolean break byte case catch char class const continue default do double else enum extends false final finally float for if implements import instanceof int interface long native new null package private protected public return short static strictfp super switch synchronized this throw throws transient true try void volatile while",
+    css: "align-items animation background border bottom color content display flex font grid height justify-content left margin max-width min-height opacity overflow padding place-items position right text top transform transition width z-index",
+    shell: "case do done elif else esac fi for function if in local return then while",
+    powershell: "begin break catch class continue data do dynamicparam else elseif end exit filter finally for foreach from function if in param process return switch throw trap try until using var while",
+    sql: "alter and as by case create delete desc distinct drop else end from group having in insert into is join left like limit not null on or order outer right select set table then update values when where",
+  };
+  const keywords = new Set((keywordSets[language] || "").split(/\s+/).filter(Boolean));
+  if (/^\/\*[\s\S]*\*\/$/.test(token) || /^\/\/.*/.test(token) || /^#.*/.test(token) || /^<!--[\s\S]*-->$/.test(token)) return "tok-comment";
+  if (/^["'`]/.test(token) || /^"""[\s\S]*"""$/.test(token) || /^'''[\s\S]*'''$/.test(token)) return "tok-string";
+  if (/^\b\d/.test(token)) return "tok-number";
+  if (language === "html" && /^<\/?[\w:-]+/.test(token)) return "tok-tag";
+  if (language === "css" && /^[.#]?[-_a-zA-Z][-_a-zA-Z0-9]*(?=\s*:|\s*\{)/.test(token)) return "tok-selector";
+  if (keywords.has(token)) return "tok-keyword";
+  if (/^[A-Z][A-Za-z0-9_]*$/.test(token)) return "tok-type";
+  return "";
+}
+
+function highlightCode(code, info = "text") {
+  const language = languageForInfo(info);
+  if (!code) return "";
+  if (language === "json") {
+    return escapeHtml(code).replace(
+      /(&quot;(?:\\.|[^&])*?&quot;)(\s*:)?|\b(true|false|null)\b|-?\b\d+(?:\.\d+)?(?:e[+-]?\d+)?\b/gi,
+      (match, stringToken, colon, boolToken) => {
+        if (stringToken) return `<span class="${colon ? "tok-property" : "tok-string"}">${stringToken}</span>${colon || ""}`;
+        if (boolToken) return `<span class="tok-keyword">${match}</span>`;
+        return `<span class="tok-number">${match}</span>`;
+      }
+    );
+  }
+
+  const commentPrefix = ["python", "shell", "powershell", "yaml"].includes(language) ? "#.*" : "\\/\\/.*";
+  const tokenPattern = new RegExp(
+    "\\/\\*[\\s\\S]*?\\*\\/|<!--([\\s\\S]*?)-->|" +
+      commentPrefix +
+      "|\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|`(?:\\\\.|[^`\\\\])*`|<\\/?[\\w:-]+(?:\\s+[^<>]*)?>|\\b\\d+(?:\\.\\d+)?\\b|\\b[A-Za-z_$][\\w$]*\\b",
+    "g"
+  );
+  let html = "";
+  let last = 0;
+  for (const match of code.matchAll(tokenPattern)) {
+    const token = match[0];
+    html += escapeHtml(code.slice(last, match.index));
+    const cls = tokenClass(token, language);
+    html += cls ? `<span class="${cls}">${escapeHtml(token)}</span>` : escapeHtml(token);
+    last = match.index + token.length;
+  }
+  html += escapeHtml(code.slice(last));
+  return html;
+}
+
+function setCodeEditorContent(title, meta, content, info = "txt") {
   state.activeFile = title;
   state.fileContent = content || "";
   state.generatedInfo = info || "txt";
+  state.editorDirty = false;
+  const language = languageForInfo(state.generatedInfo);
   $("activeFile").textContent = title;
   $("fileMeta").textContent = meta;
-  $("codePreview").innerHTML = `<code>${escapeHtml(state.fileContent.slice(0, 80000))}${state.fileContent.length > 80000 ? "\n... [truncated]" : ""}</code>`;
+  $("editorLanguage").textContent = language;
+  $("codeEditor").value = state.fileContent;
+  $("codeEditor").disabled = false;
+  $("codeEditorWrap").classList.toggle("empty", !state.fileContent);
+  renderCodeHighlight();
   $("attachFile").disabled = !state.fileContent;
   $("downloadCode").disabled = !state.fileContent;
+}
+
+function renderCodeHighlight() {
+  const code = $("codeEditor").value;
+  const visibleCode = code || "Select or generate code to edit it here.";
+  $("codeHighlight").innerHTML = `<code>${highlightCode(visibleCode, state.generatedInfo)}</code>`;
+}
+
+function setCodePreview(title, meta, content, info = "txt") {
+  setCodeEditorContent(title, meta, content, info);
 }
 
 function renderState(data) {
@@ -206,6 +309,8 @@ function extractCodeBlocks(text) {
 }
 
 function renderGeneratedCodeFromMessages() {
+  if (state.activeFile && state.activeFile !== "Generated Code") return;
+  if (state.editorDirty) return;
   const messages = state.data?.messages || [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     if (messages[i].role !== "assistant") continue;
@@ -276,14 +381,12 @@ function updateGeneratedCodeFromStreaming(text) {
 
 async function loadFile(path) {
   const data = await api(`/api/file?path=${encodeURIComponent(path)}`);
-  state.activeFile = path;
-  state.fileContent = data.content;
-  state.generatedInfo = data.ext || "txt";
-  $("activeFile").textContent = path;
-  $("fileMeta").textContent = `${data.ext} · ${formatSize(data.size)} · ${data.content.length.toLocaleString()} chars`;
-  $("codePreview").innerHTML = `<code>${escapeHtml(data.content.slice(0, 50000))}${data.content.length > 50000 ? "\n... [truncated]" : ""}</code>`;
-  $("attachFile").disabled = false;
-  $("downloadCode").disabled = false;
+  setCodeEditorContent(
+    path,
+    `${data.ext} · ${formatSize(data.size)} · ${data.content.length.toLocaleString()} chars · editable`,
+    data.content,
+    data.ext || "txt"
+  );
   renderFiles();
 }
 
@@ -435,6 +538,7 @@ async function sendPrompt(prompt) {
   let streamTarget = null;
   let streamText = "";
   const activeContext = currentActiveContext();
+  state.editorDirty = false;
   try {
     const res = await fetch("/api/chat_stream", {
       method: "POST",
@@ -519,6 +623,18 @@ $("attachFile").addEventListener("click", () => {
   $("promptInput").focus();
 });
 $("downloadCode").addEventListener("click", downloadCurrentCode);
+$("codeEditor").addEventListener("input", () => {
+  state.fileContent = $("codeEditor").value;
+  state.editorDirty = true;
+  $("downloadCode").disabled = !state.fileContent;
+  $("attachFile").disabled = !state.fileContent;
+  $("codeEditorWrap").classList.toggle("empty", !state.fileContent);
+  renderCodeHighlight();
+});
+$("codeEditor").addEventListener("scroll", () => {
+  $("codeHighlight").scrollTop = $("codeEditor").scrollTop;
+  $("codeHighlight").scrollLeft = $("codeEditor").scrollLeft;
+});
 $("chatForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const prompt = $("promptInput").value.trim();
