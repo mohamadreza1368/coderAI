@@ -139,6 +139,28 @@ textarea { resize: none; padding: 10px; }
   background: rgba(15, 19, 26, .95);
   overflow: hidden;
 }
+.workspace-panel {
+  position: relative;
+}
+body.workspace-locked .workspace-panel::before {
+  content: "Workspace locked while the agent is running";
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  text-align: center;
+  color: #c8d3e5;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  background: rgba(5, 7, 11, .58);
+  backdrop-filter: blur(1.5px);
+}
+body.workspace-locked .workspace-panel {
+  border-color: #31537c;
+}
 
 .workspace-panel,
 .agent-panel {
@@ -491,6 +513,12 @@ p, .editor-head span {
 .loading #attachFile {
   opacity: .65;
   pointer-events: none;
+}
+body.workspace-locked .workspace-panel button,
+body.workspace-locked .workspace-panel input,
+body.workspace-locked .workspace-panel textarea,
+body.workspace-locked .workspace-panel select {
+  opacity: .58;
 }
 .loading-overlay {
   position: fixed;

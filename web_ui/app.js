@@ -3,6 +3,7 @@ const state = {
   activeFile: null,
   fileContent: "",
   generatedInfo: "txt",
+  workspaceLocked: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -101,6 +102,7 @@ function renderState(data) {
   renderPrompts();
   renderMessages();
   renderGeneratedCodeFromMessages();
+  if (state.workspaceLocked) setWorkspaceLocked(true);
 }
 
 function renderModels(modelPayload, activeModel) {
@@ -220,9 +222,27 @@ function renderGeneratedCodeFromMessages() {
   }
 }
 
-function setLoading(isLoading, text = "Working...") {
+function setWorkspaceLocked(isLocked) {
+  state.workspaceLocked = Boolean(isLocked);
+  document.body.classList.toggle("workspace-locked", state.workspaceLocked);
+  document.querySelectorAll(".workspace-panel button, .workspace-panel input, .workspace-panel select, .workspace-panel textarea")
+    .forEach((control) => {
+      if (state.workspaceLocked) {
+        if (!("lockPrevDisabled" in control.dataset)) {
+          control.dataset.lockPrevDisabled = control.disabled ? "1" : "0";
+        }
+        control.disabled = true;
+      } else {
+        control.disabled = control.dataset.lockPrevDisabled === "1";
+        delete control.dataset.lockPrevDisabled;
+      }
+    });
+}
+
+function setLoading(isLoading, text = "Working...", lockWorkspace = state.workspaceLocked) {
   document.body.classList.toggle("loading", isLoading);
   $("loadingText").textContent = text;
+  setWorkspaceLocked(isLoading ? lockWorkspace : false);
 }
 
 function appendStreamingAssistant() {
@@ -401,7 +421,7 @@ async function savePrompt() {
 }
 
 async function scanProject() {
-  setLoading(true, "Scanning project...");
+  setLoading(true, "Scanning project...", true);
   try {
     const data = await api("/api/scan", { method: "POST", body: JSON.stringify({ max_files: 250 }) });
     renderState(data.state);
@@ -411,7 +431,7 @@ async function scanProject() {
 }
 
 async function sendPrompt(prompt) {
-  setLoading(true, "Sending prompt...");
+  setLoading(true, "Sending prompt...", true);
   let streamTarget = null;
   let streamText = "";
   const activeContext = currentActiveContext();
