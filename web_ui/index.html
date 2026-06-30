@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ollama Agentic Workspace</title>
-  <link rel="stylesheet" href="/styles.css?v=20260629-3">
+  <link rel="stylesheet" href="/styles.css?v=20260630-1">
 </head>
 <body>
   <div class="app-shell">
@@ -133,6 +133,16 @@
             <h1>Agent</h1>
             <p>Explanations, tool calls, and reports</p>
           </div>
+          <div id="tokenMeter" class="token-meter" title="Context window usage">
+            <div class="token-meter-row">
+              <span>Context</span>
+              <strong id="tokenPercent">0%</strong>
+            </div>
+            <div class="token-bar">
+              <span id="tokenBarFill"></span>
+            </div>
+            <span id="tokenDetails">0 / 0 tokens</span>
+          </div>
         </section>
         <section id="messages" class="messages"></section>
         <form id="chatForm" class="composer">
@@ -149,6 +159,6 @@
       <span id="loadingText">Preparing...</span>
     </div>
   </div>
-  <script src="/app.js?v=20260629-2"></script>
+  <script src="/app.js?v=20260630-1"></script>
 </body>
 </html>

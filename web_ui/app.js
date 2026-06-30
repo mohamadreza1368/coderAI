@@ -4,6 +4,7 @@ const state = {
   fileContent: "",
   generatedInfo: "txt",
   editorDirty: false,
+  contextUsage: {},
   workspaceLocked: false,
 };
 
@@ -30,6 +31,13 @@ function formatSize(bytes) {
   if (bytes < 1024) return `${bytes}b`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+}
+
+function formatTokens(value) {
+  const num = Number(value || 0);
+  if (num >= 1000000) return `${(num / 1000000).toFixed(num >= 10000000 ? 0 : 1)}M`;
+  if (num >= 1000) return `${(num / 1000).toFixed(num >= 10000 ? 0 : 1)}K`;
+  return String(Math.max(0, Math.round(num)));
 }
 
 function extensionForInfo(info) {
@@ -160,6 +168,7 @@ function setCodeEditorContent(title, meta, content, info = "txt") {
   renderCodeHighlight();
   $("attachFile").disabled = !state.fileContent;
   $("downloadCode").disabled = !state.fileContent;
+  updateTokenUsage();
 }
 
 function renderCodeHighlight() {
@@ -193,6 +202,8 @@ function renderState(data) {
   updateTavilyPanel(data.settings);
   const memory = data.memory || {};
   $("memoryStats").textContent = `Memory: ${memory.summarized_messages || 0} compacted · ${memory.summary_chars || 0} chars · ${memory.token_counter || "estimated"}`;
+  state.contextUsage = data.context_usage || {};
+  updateTokenUsage();
   $("customApiUrl").value = data.settings.custom_api_url || "https://api.openai.com/v1";
   $("topCustomApiUrl").value = data.settings.custom_api_url || "https://api.openai.com/v1";
   $("customApiKey").value = "";
@@ -206,6 +217,49 @@ function renderState(data) {
   renderMessages();
   renderGeneratedCodeFromMessages();
   if (state.workspaceLocked) setWorkspaceLocked(true);
+}
+
+function estimateTextTokens(text) {
+  return Math.max(0, Math.ceil(String(text || "").length / 4));
+}
+
+function updateTokenUsage() {
+  renderTokenUsage(state.contextUsage || {});
+}
+
+function renderTokenUsage(usage) {
+  const activeContextTokens = state.activeFile && state.fileContent ? estimateTextTokens(state.fileContent) : 0;
+  const draftPromptTokens = $("promptInput") ? estimateTextTokens($("promptInput").value) : 0;
+  const extraTokens = activeContextTokens + draftPromptTokens;
+  const inputTokens = Number(usage.input_tokens || 0) + extraTokens;
+  const settingsBudget = Number(state.data?.settings?.context_token_budget || 0);
+  const effectiveWindow = Number(usage.effective_window || usage.context_window || settingsBudget || 0);
+  const contextWindow = Number(usage.context_window || effectiveWindow);
+  const configuredBudget = Number(usage.configured_budget || settingsBudget || effectiveWindow);
+  const percent = effectiveWindow ? Math.min(999, Math.round((inputTokens / effectiveWindow) * 100)) : 0;
+  const fillPercent = Math.max(0, Math.min(100, percent));
+  const meter = $("tokenMeter");
+  meter.classList.toggle("warn", percent >= 70 && percent < 90);
+  meter.classList.toggle("danger", percent >= 90);
+  $("tokenPercent").textContent = `${percent}%`;
+  $("tokenBarFill").style.width = `${fillPercent}%`;
+  $("tokenDetails").textContent = `${formatTokens(inputTokens)} / ${formatTokens(effectiveWindow)} tokens`;
+
+  const source = usage.window_source || "estimated";
+  const counter = usage.counter || "estimated";
+  const remaining = Math.max(0, effectiveWindow - inputTokens);
+  meter.title = [
+    `Input tokens: ${inputTokens.toLocaleString()}`,
+    `Base context tokens: ${Number(usage.input_tokens || 0).toLocaleString()}`,
+    `Active editor estimate: ${activeContextTokens.toLocaleString()}`,
+    `Draft prompt estimate: ${draftPromptTokens.toLocaleString()}`,
+    `Effective context budget: ${effectiveWindow.toLocaleString()}`,
+    `Model context window: ${contextWindow.toLocaleString()} (${source})`,
+    `Configured context budget: ${configuredBudget.toLocaleString()}`,
+    `Reserved response tokens: ${Number(usage.response_budget || 0).toLocaleString()}`,
+    `Remaining input tokens: ${remaining.toLocaleString()}`,
+    `Counter: ${counter}`,
+  ].join("\n");
 }
 
 function renderModels(modelPayload, activeModel) {
@@ -630,11 +684,13 @@ $("codeEditor").addEventListener("input", () => {
   $("attachFile").disabled = !state.fileContent;
   $("codeEditorWrap").classList.toggle("empty", !state.fileContent);
   renderCodeHighlight();
+  updateTokenUsage();
 });
 $("codeEditor").addEventListener("scroll", () => {
   $("codeHighlight").scrollTop = $("codeEditor").scrollTop;
   $("codeHighlight").scrollLeft = $("codeEditor").scrollLeft;
 });
+$("promptInput").addEventListener("input", updateTokenUsage);
 $("chatForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const prompt = $("promptInput").value.trim();

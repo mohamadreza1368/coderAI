@@ -49,9 +49,11 @@ MAX_AUTO_CONTINUES = int(os.getenv("AGENT_AUTO_CONTINUES", "2"))
 
 try:
     from litellm import token_counter as _litellm_token_counter
+    from litellm import model_cost as _litellm_model_cost
     _litellm_import_error = ""
 except Exception as exc:
     _litellm_token_counter = None
+    _litellm_model_cost = {}
     _litellm_import_error = repr(exc)
 
 STATE = {
@@ -175,6 +177,85 @@ def _estimate_tokens_for_text(text: str) -> int:
     return max(1, len(text or "") // 4)
 
 
+def _fast_tokens_for_messages(messages: list[dict]) -> int:
+    chars = sum(len(str(message.get("content", ""))) + 24 for message in messages)
+    return max(1, chars // 4)
+
+
+def _model_context_window(model: str) -> tuple[int, str]:
+    cleaned = (model or "").strip()
+    budget = max(4_000, int(STATE.get("context_token_budget") or DEFAULT_CONTEXT_TOKEN_BUDGET))
+
+    if _litellm_token_counter:
+        candidates = [cleaned]
+        if STATE.get("conn_mode") == MODE_LOCAL and not cleaned.startswith("ollama/"):
+            candidates.append(f"ollama/{cleaned}")
+        for candidate in candidates:
+            try:
+                info = _litellm_model_cost.get(candidate, {}) or {}
+                max_input = int(info.get("max_input_tokens") or 0)
+                if max_input > 0:
+                    return max_input, "litellm"
+            except Exception:
+                pass
+
+    lower = cleaned.lower()
+    known_windows = {
+        "gpt-4o": 128_000,
+        "gpt-4o-mini": 128_000,
+        "gpt-4.1": 1_000_000,
+        "gpt-4.1-mini": 1_000_000,
+        "gpt-4.1-nano": 1_000_000,
+        "gpt-5": 400_000,
+        "gpt-5-mini": 400_000,
+        "gpt-5-nano": 400_000,
+        "claude-3.5": 200_000,
+        "claude-3-5": 200_000,
+        "claude-3.7": 200_000,
+        "claude-3-7": 200_000,
+        "claude-sonnet-4": 200_000,
+        "claude-opus-4": 200_000,
+        "gemini-1.5": 1_000_000,
+        "gemini-2.5": 1_000_000,
+        "llama3.1": 128_000,
+        "llama3.2": 128_000,
+        "llama3.3": 128_000,
+        "qwen2.5": 128_000,
+        "qwen3": 128_000,
+        "gemma4": 128_000,
+        "gemma3": 128_000,
+        "gpt-oss": 128_000,
+    }
+    for marker, window in known_windows.items():
+        if marker in lower:
+            return window, "estimated"
+    return budget, "configured"
+
+
+def _context_usage_snapshot() -> dict:
+    final_system = _build_final_system_prompt()
+    messages = _build_api_messages(final_system, compact=False)
+    input_tokens = _fast_tokens_for_messages(messages)
+    configured_budget = max(4_000, int(STATE.get("context_token_budget") or DEFAULT_CONTEXT_TOKEN_BUDGET))
+    context_window, source = _model_context_window(STATE.get("model", ""))
+    effective_window = max(1, min(context_window, configured_budget))
+    response_budget = max(512, int(STATE.get("response_token_budget") or DEFAULT_RESPONSE_TOKEN_BUDGET))
+    remaining = max(0, effective_window - input_tokens)
+    pct = min(999, round((input_tokens / effective_window) * 100)) if effective_window else 0
+    return {
+        "input_tokens": input_tokens,
+        "context_window": context_window,
+        "configured_budget": configured_budget,
+        "effective_window": effective_window,
+        "response_budget": response_budget,
+        "remaining_tokens": remaining,
+        "percent": pct,
+        "window_source": source,
+        "message_count": len(messages),
+        "counter": "fast estimate",
+    }
+
+
 def _message_summary_line(message: dict) -> str:
     role = message.get("role", "user")
     content = " ".join(str(message.get("content", "")).split())
@@ -255,8 +336,9 @@ def _build_final_system_prompt() -> str:
     return final
 
 
-def _build_api_messages(final_system: str) -> list[dict]:
-    _compact_memory_if_needed()
+def _build_api_messages(final_system: str, compact: bool = True) -> list[dict]:
+    if compact:
+        _compact_memory_if_needed()
     target_tokens = max(4_000, int(STATE.get("context_token_budget") or DEFAULT_CONTEXT_TOKEN_BUDGET))
     system_tokens = _estimate_tokens_for_text(final_system)
     budget = max(2_000, (target_tokens - system_tokens) * 4)
@@ -976,6 +1058,7 @@ def _client_state() -> dict:
             "langchain_enabled": _use_langchain_runtime(),
             "langchain_error": lc_runtime.error,
         },
+        "context_usage": _context_usage_snapshot(),
         "prompts": _prompt_payload(),
         "models": models_payload,
     }

@@ -26,6 +26,7 @@ The folder-based package may start faster and is usually better for future insta
 - Skill manager backed by `skills/**/SKILL.md`.
 - LangChain-backed model runtime for Ollama and OpenAI-compatible APIs, with a local HTTP fallback.
 - Streaming chat responses and live generated-code preview.
+- Context window usage meter with token estimates and percentage warnings.
 - Download button for generated or selected code.
 - Context compaction and LiteLLM-based token counting when available.
 

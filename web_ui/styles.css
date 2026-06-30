@@ -186,6 +186,50 @@ body.workspace-locked .workspace-panel {
   align-items: center;
   flex: 0 0 auto;
 }
+.token-meter {
+  width: 168px;
+  display: grid;
+  gap: 5px;
+  flex: 0 0 auto;
+}
+.token-meter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.token-meter-row strong {
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.token-bar {
+  height: 7px;
+  border: 1px solid #263448;
+  border-radius: 999px;
+  background: #080c12;
+  overflow: hidden;
+}
+.token-bar span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+  transition: width .2s ease, background .2s ease;
+}
+.token-meter.warn .token-bar span { background: #e0af68; }
+.token-meter.danger .token-bar span { background: var(--danger); }
+#tokenDetails {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .editor-language {
   border: 1px solid #263448;
   background: #0b1017;
