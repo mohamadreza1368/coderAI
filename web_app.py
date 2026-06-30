@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from agent_runtime import LangChainRuntime, RuntimeSettings
 from config import DEFAULT_SYSTEM_PROMPT, MODE_CUSTOM, MODE_LOCAL
 from prompt_manager import get_prompt_manager
 from skills_manager import get_skills_manager
@@ -79,6 +80,7 @@ STATE = {
 
 sm = get_skills_manager()
 pm = get_prompt_manager()
+lc_runtime = LangChainRuntime()
 
 
 AGENT_WORKFLOW_PROMPT = """
@@ -572,9 +574,29 @@ def _format_tool_calls_for_history(conn_mode: str, tool_calls: list[dict]) -> li
     return formatted
 
 
+def _use_langchain_runtime() -> bool:
+    return os.getenv("AGENT_USE_LANGCHAIN", "true").lower() not in {"0", "false", "no"}
+
+
+def _runtime_settings() -> RuntimeSettings:
+    return RuntimeSettings(
+        conn_mode=STATE["conn_mode"],
+        model=STATE["model"],
+        temperature=float(STATE["temperature"]),
+        enable_thinking=bool(STATE["enable_thinking"]),
+        custom_api_url=STATE["custom_api_url"],
+        custom_api_key=STATE["custom_api_key"],
+        response_token_budget=max(512, int(STATE.get("response_token_budget") or DEFAULT_RESPONSE_TOKEN_BUDGET)),
+        request_timeout=REQUEST_TIMEOUT,
+    )
+
+
 def _call_model(history: list[dict]) -> dict:
     response_budget = max(512, int(STATE.get("response_token_budget") or DEFAULT_RESPONSE_TOKEN_BUDGET))
     conn_mode = STATE["conn_mode"]
+    if _use_langchain_runtime() and lc_runtime.supports(conn_mode):
+        return lc_runtime.invoke(history, _active_tool_schemas(), _runtime_settings())
+
     if conn_mode == MODE_LOCAL:
         data = _post_json(
             "http://127.0.0.1:11434/api/chat",
@@ -643,6 +665,9 @@ def _merge_custom_tool_delta(tool_calls: dict, delta_calls: list[dict]) -> None:
 def _call_model_stream(history: list[dict], write_event) -> dict:
     response_budget = max(512, int(STATE.get("response_token_budget") or DEFAULT_RESPONSE_TOKEN_BUDGET))
     conn_mode = STATE["conn_mode"]
+    if _use_langchain_runtime() and lc_runtime.supports(conn_mode):
+        return lc_runtime.stream(history, _active_tool_schemas(), _runtime_settings(), write_event)
+
     content_parts: list[str] = []
     thinking_parts: list[str] = []
 
@@ -945,6 +970,11 @@ def _client_state() -> dict:
             "token_counter": "litellm" if _litellm_token_counter else "estimated",
             "token_counter_error": _litellm_import_error,
             "visible_messages": len(STATE["messages"]),
+        },
+        "runtime": {
+            "langchain_available": lc_runtime.available,
+            "langchain_enabled": _use_langchain_runtime(),
+            "langchain_error": lc_runtime.error,
         },
         "prompts": _prompt_payload(),
         "models": models_payload,

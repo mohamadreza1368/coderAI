@@ -24,6 +24,7 @@ The folder-based package may start faster and is usually better for future insta
 - Optional Tavily web search tools, controlled from the Settings UI.
 - System prompt manager backed by Markdown files in `system_prompts/`.
 - Skill manager backed by `skills/**/SKILL.md`.
+- LangChain-backed model runtime for Ollama and OpenAI-compatible APIs, with a local HTTP fallback.
 - Streaming chat responses and live generated-code preview.
 - Download button for generated or selected code.
 - Context compaction and LiteLLM-based token counting when available.
@@ -32,7 +33,8 @@ The folder-based package may start faster and is usually better for future insta
 
 ```text
 .
-├── web_app.py                  # Local HTTP server and agent runtime
+├── web_app.py                  # Local HTTP server and agent loop
+├── agent_runtime.py            # LangChain model runtime adapter
 ├── launcher.py                 # EXE-friendly launcher that opens the browser
 ├── tools.py                    # Tool schemas and tool execution handlers
 ├── config.py                   # Runtime configuration and environment defaults
@@ -125,6 +127,9 @@ Please retain the attribution in the `NOTICE` file when redistributing this proj
 ## Development Notes
 
 - `launcher.py` finds a free local port starting at `7864` and opens the browser automatically.
+- LangChain is used as the preferred model runtime for Local Ollama and OpenAI-compatible Custom API mode.
+- If LangChain provider packages are unavailable, the app falls back to the built-in HTTP runtime.
+- Set `AGENT_USE_LANGCHAIN=false` to force the built-in HTTP runtime during debugging.
 - LiteLLM is used only for token counting. If it is unavailable, the app falls back to conservative character-based estimates.
 - `LITELLM_LOCAL_MODEL_COST_MAP=True` is set to prevent LiteLLM from trying to refresh its model-cost map from the internet.
 - Tool access is constrained to the selected workspace where file operations are involved.
