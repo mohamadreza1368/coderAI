@@ -348,36 +348,55 @@ function renderMessages() {
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
-function extractCodeBlocks(text) {
+function extractCodeBlocks(text, includeOpenBlock = false) {
   const blocks = [];
   const re = /```([^\n`]*)\n([\s\S]*?)```/g;
   let match;
+  let lastEnd = 0;
   while ((match = re.exec(text || "")) !== null) {
     const info = (match[1] || "text").trim();
     const code = (match[2] || "").trimEnd();
+    lastEnd = re.lastIndex;
     if (code.trim()) {
       blocks.push({ info, code });
+    }
+  }
+  if (includeOpenBlock) {
+    const remaining = String(text || "").slice(lastEnd);
+    const open = remaining.match(/```([^\n`]*)\n([\s\S]*)$/);
+    if (open) {
+      const info = (open[1] || "text").trim();
+      const code = (open[2] || "").trimEnd();
+      if (code.trim()) {
+        blocks.push({ info, code });
+      }
     }
   }
   return blocks;
 }
 
-function renderGeneratedCodeFromMessages() {
-  if (state.activeFile && state.activeFile !== "Generated Code") return;
+function setGeneratedCodeFromText(text, metaPrefix = "extracted from latest agent response", force = false) {
+  if (!force && state.activeFile && state.activeFile !== "Generated Code") return false;
+  if (state.editorDirty) return false;
+  const blocks = extractCodeBlocks(text, true);
+  if (!blocks.length) return false;
+  const block = blocks[blocks.length - 1];
+  setCodePreview(
+    "Generated Code",
+    `${block.info || "text"} · ${block.code.length.toLocaleString()} chars · ${metaPrefix}`,
+    block.code,
+    block.info || "txt"
+  );
+  return true;
+}
+
+function renderGeneratedCodeFromMessages(force = false) {
+  if (!force && state.activeFile && state.activeFile !== "Generated Code") return;
   if (state.editorDirty) return;
   const messages = state.data?.messages || [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     if (messages[i].role !== "assistant") continue;
-    const blocks = extractCodeBlocks(messages[i].content);
-    if (!blocks.length) continue;
-    const block = blocks[blocks.length - 1];
-    setCodePreview(
-      "Generated Code",
-      `${block.info || "text"} · ${block.code.length.toLocaleString()} chars · extracted from latest agent response`,
-      block.code,
-      block.info || "txt"
-    );
-    return;
+    if (setGeneratedCodeFromText(messages[i].content, "extracted from latest agent response", force)) return;
   }
 }
 
@@ -422,15 +441,7 @@ function appendToolStatus(name, text) {
 }
 
 function updateGeneratedCodeFromStreaming(text) {
-  const blocks = extractCodeBlocks(text);
-  if (!blocks.length) return;
-  const block = blocks[blocks.length - 1];
-  setCodePreview(
-    "Generated Code",
-    `${block.info || "text"} · live stream · ${block.code.length.toLocaleString()} chars`,
-    block.code,
-    block.info || "txt"
-  );
+  setGeneratedCodeFromText(text, "live stream", true);
 }
 
 async function loadFile(path) {
@@ -665,6 +676,9 @@ async function sendPrompt(prompt) {
         } else if (event.type === "done") {
           sawDone = true;
           renderState(event.state);
+          if (!setGeneratedCodeFromText(streamText, "final stream output", true)) {
+            renderGeneratedCodeFromMessages(true);
+          }
         }
       }
     }
@@ -674,6 +688,9 @@ async function sendPrompt(prompt) {
         if (event.type === "done") {
           sawDone = true;
           renderState(event.state);
+          if (!setGeneratedCodeFromText(streamText, "final stream output", true)) {
+            renderGeneratedCodeFromMessages(true);
+          }
         } else if (event.type === "error") {
           showStreamNotice(event.message || "Error");
         }
