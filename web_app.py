@@ -78,6 +78,7 @@ STATE = {
     "auto_continue": True,
     "tavily_enabled": os.getenv("TAVILY_ENABLED", "false").lower() == "true",
     "tavily_api_key": os.getenv("TAVILY_API_KEY", ""),
+    "generated_artifact": None,
 }
 
 sm = get_skills_manager()
@@ -311,14 +312,28 @@ def _build_workspace_context(active_context: dict | None = None) -> str:
         path = str(active_context.get("path") or "").strip()
         content = str(active_context.get("content") or "")
         if path and content:
+            is_generated = path == "Generated Code"
+            heading = "[Active generated artifact in Editor]" if is_generated else "[Active file selected in UI]"
             lines += [
                 "",
-                "[Active file selected in UI]",
+                heading,
                 f"Path: {path}",
-                "The user's next request is about this file unless they explicitly say otherwise.",
-                "Use `write_file` or `replace_in_file` to apply requested changes to this path when appropriate.",
+            ]
+            if is_generated:
+                lines += [
+                    "The user's next request is about this generated code artifact unless they explicitly say otherwise.",
+                    "Apply the requested change to this artifact and return the complete updated artifact in one fenced code block.",
+                    "Do not return only a patch, excerpt, or explanation when the user asks for a code change.",
+                    "Keep any prose short and separate from the fenced code block.",
+                ]
+            else:
+                lines += [
+                    "The user's next request is about this file unless they explicitly say otherwise.",
+                    "Use `write_file` or `replace_in_file` to apply requested changes to this path when appropriate.",
+                ]
+            lines += [
                 "",
-                "```",
+                f"```{active_context.get('info') or ''}".rstrip(),
                 _clip_for_context(content, 18_000),
                 "```",
             ]
@@ -1023,6 +1038,90 @@ def _continuation_prompt() -> str:
     )
 
 
+def _extract_code_blocks_with_info(text: str, include_open_block: bool = False) -> list[dict]:
+    import re
+
+    blocks: list[dict] = []
+    last_end = 0
+    for match in re.finditer(r"```([^\n`]*)\n([\s\S]*?)```", text or ""):
+        info = (match.group(1) or "txt").strip() or "txt"
+        code = (match.group(2) or "").rstrip()
+        last_end = match.end()
+        if code.strip():
+            blocks.append({"info": info, "code": code})
+
+    if include_open_block:
+        remaining = str(text or "")[last_end:]
+        open_match = re.search(r"```([^\n`]*)\n([\s\S]*)$", remaining)
+        if open_match:
+            info = (open_match.group(1) or "txt").strip() or "txt"
+            code = (open_match.group(2) or "").rstrip()
+            if code.strip():
+                blocks.append({"info": info, "code": code})
+    return blocks
+
+
+def _infer_artifact_info(code: str, fallback: str = "txt") -> str:
+    value = (code or "").strip()
+    if not value:
+        return fallback or "txt"
+    lower = value.lower()
+    if lower.startswith(("<!doctype", "<html")) or ("<body" in lower and "</" in lower):
+        return "html"
+    if "<" in value and ">" in value and any(tag in lower for tag in ("<div", "<section", "<script", "<style", "<template")):
+        return "html"
+    if any(marker in value for marker in ("def ", "import ", "from ", "class ")) and ":" in value:
+        return "python"
+    if any(marker in value for marker in ("function ", "const ", "let ", "var ", "export ", "=>")):
+        return "javascript"
+    if "public class " in lower or "private class " in lower:
+        return "java"
+    if "{" in value and any(marker in lower for marker in ("color:", "display:", "padding:", "margin:", "background:")):
+        return "css"
+    return fallback or "txt"
+
+
+def _looks_like_artifact_code(text: str) -> bool:
+    value = (text or "").strip()
+    if len(value) < 20:
+        return False
+    if "\n" not in value:
+        return False
+    return _contains_code_markers(value) or _looks_like_html(value)
+
+
+def _artifact_from_response(response_text: str, active_context: dict | None = None) -> dict | None:
+    blocks = _extract_code_blocks_with_info(response_text, include_open_block=True)
+    active_info = str((active_context or {}).get("info") or "txt")
+    if blocks:
+        block = max(blocks, key=lambda item: len(item.get("code", "")))
+        return {
+            "title": "Generated Code",
+            "info": block.get("info") or active_info or "txt",
+            "content": block.get("code", ""),
+            "source": "assistant_code_block",
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    if (active_context or {}).get("path") == "Generated Code" and _looks_like_artifact_code(response_text):
+        content = response_text.strip()
+        return {
+            "title": "Generated Code",
+            "info": _infer_artifact_info(content, active_info),
+            "content": content,
+            "source": "assistant_plain_code",
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    return None
+
+
+def _update_generated_artifact(response_text: str, active_context: dict | None = None) -> dict | None:
+    artifact = _artifact_from_response(response_text, active_context)
+    if artifact:
+        STATE["generated_artifact"] = artifact
+    return artifact
+
+
 def _run_agent_loop(api_messages: list[dict]) -> tuple[str, str, list[dict]]:
     history = list(api_messages)
     response_text = ""
@@ -1092,6 +1191,7 @@ def _run_agent(prompt: str, active_context: dict | None = None) -> dict:
 
     used_skills = sm.parse_used_skills(response_text)
     clean_response = sm.strip_skill_tag(response_text)
+    _update_generated_artifact(clean_response, active_context)
     STATE["messages"].append({"role": "assistant", "content": clean_response})
     STATE["tools_log"].append(tools_done)
     STATE["used_skills_log"].append([s.name for s in used_skills])
@@ -1192,6 +1292,7 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
 
     used_skills = sm.parse_used_skills(response_text)
     clean_response = sm.strip_skill_tag(response_text)
+    _update_generated_artifact(clean_response, active_context)
     STATE["messages"].append({"role": "assistant", "content": clean_response})
     STATE["tools_log"].append(tools_done)
     STATE["used_skills_log"].append([s.name for s in used_skills])
@@ -1210,6 +1311,7 @@ def _client_state() -> dict:
         "workspace": _workspace_snapshot(),
         "messages": STATE["messages"],
         "tools_log": STATE["tools_log"],
+        "generated_artifact": STATE.get("generated_artifact"),
         "selected_skills": STATE["selected_skills"],
         "skills": [
             {

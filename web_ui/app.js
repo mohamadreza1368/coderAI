@@ -278,7 +278,9 @@ function renderState(data) {
   renderSkills();
   renderPrompts();
   renderMessages();
-  renderGeneratedCodeFromMessages();
+  if (!renderGeneratedArtifactFromState()) {
+    renderGeneratedCodeFromMessages();
+  }
   if (state.workspaceLocked) setWorkspaceLocked(true);
 }
 
@@ -403,12 +405,22 @@ function renderMessages() {
     return `
       <article class="message ${msg.role}">
         <span class="role">${msg.role}</span>
-        ${escapeHtml(msg.content || "")}
+        ${renderMessageContent(msg)}
         ${toolHtml}
       </article>
     `;
   }).join("");
   $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+function renderMessageContent(msg) {
+  const content = msg.content || "";
+  if (msg.role !== "assistant") return escapeHtml(content);
+  const blocks = extractCodeBlocks(content);
+  if (!blocks.length) return escapeHtml(content);
+  const prose = content.replace(/```([^\n`]*)\n([\s\S]*?)```/g, "").trim();
+  const note = `<div class="tool-box">Code artifact updated in Editor · ${blocks.length} block${blocks.length > 1 ? "s" : ""}</div>`;
+  return `${escapeHtml(prose)}${prose ? "\n" : ""}${note}`;
 }
 
 function extractCodeBlocks(text, includeOpenBlock = false) {
@@ -482,6 +494,20 @@ function setGeneratedCodeFromText(text, metaPrefix = "extracted from latest agen
     `${block.info || "text"} · ${block.code.length.toLocaleString()} chars · ${metaPrefix}`,
     block.code,
     block.info || "txt"
+  );
+  return true;
+}
+
+function renderGeneratedArtifactFromState(force = false) {
+  const artifact = state.data?.generated_artifact;
+  if (!artifact?.content) return false;
+  if (!force && state.activeFile && state.activeFile !== "Generated Code") return false;
+  if (state.editorDirty) return false;
+  setCodePreview(
+    artifact.title || "Generated Code",
+    `${artifact.info || "text"} · ${artifact.content.length.toLocaleString()} chars · ${artifact.source || "agent artifact"}`,
+    artifact.content,
+    artifact.info || "txt"
   );
   return true;
 }
@@ -721,6 +747,19 @@ async function sendPrompt(prompt) {
     }
     $("messages").scrollTop = $("messages").scrollHeight;
   };
+  const refreshEditorAfterDone = async () => {
+    if (activeContext?.path && activeContext.path !== "Generated Code") {
+      try {
+        await loadFile(activeContext.path);
+      } catch {
+        renderGeneratedArtifactFromState(true);
+      }
+      return;
+    }
+    if (!renderGeneratedArtifactFromState(true) && !setGeneratedCodeFromText(streamText, "final stream output", true)) {
+      renderGeneratedCodeFromMessages(true);
+    }
+  };
   try {
     const res = await fetch("/api/chat_stream", {
       method: "POST",
@@ -772,9 +811,7 @@ async function sendPrompt(prompt) {
         } else if (event.type === "done") {
           sawDone = true;
           renderState(event.state);
-          if (!setGeneratedCodeFromText(streamText, "final stream output", true)) {
-            renderGeneratedCodeFromMessages(true);
-          }
+          await refreshEditorAfterDone();
         }
       }
     }
@@ -784,9 +821,7 @@ async function sendPrompt(prompt) {
         if (event.type === "done") {
           sawDone = true;
           renderState(event.state);
-          if (!setGeneratedCodeFromText(streamText, "final stream output", true)) {
-            renderGeneratedCodeFromMessages(true);
-          }
+          await refreshEditorAfterDone();
         } else if (event.type === "error") {
           showStreamNotice(event.message || "Error");
         }
