@@ -45,7 +45,7 @@ MAX_ITERATIONS = 10
 REQUEST_TIMEOUT = int(os.getenv("AGENT_REQUEST_TIMEOUT", "1800"))
 DEFAULT_CONTEXT_TOKEN_BUDGET = int(os.getenv("AGENT_CONTEXT_TOKENS", "24000"))
 DEFAULT_RESPONSE_TOKEN_BUDGET = int(os.getenv("AGENT_RESPONSE_TOKENS", "8192"))
-MAX_AUTO_CONTINUES = int(os.getenv("AGENT_AUTO_CONTINUES", "4"))
+MAX_AUTO_CONTINUES = int(os.getenv("AGENT_AUTO_CONTINUES", "8"))
 
 try:
     from litellm import token_counter as _litellm_token_counter
@@ -847,10 +847,173 @@ def _looks_incomplete_generation(text: str) -> bool:
         "the rest",
         "remaining code",
         "next part",
+        "rest of the code",
+        "rest of code",
+        "to be continued",
+        "omitted for brevity",
+        "truncated",
+        "partial",
     )
     if any(marker in tail for marker in unfinished_markers):
         return True
-    return stripped.endswith(("{", "(", "[", ",", "\\", "=", "+", "-", "*", "/", ":", "&&", "||"))
+    if stripped.endswith("..."):
+        return True
+
+    code_blocks = _extract_markdown_code_blocks(stripped)
+    if code_blocks:
+        return _looks_like_incomplete_code(code_blocks[-1])
+    if _contains_code_markers(stripped):
+        return _looks_like_incomplete_code(stripped)
+    return False
+
+
+def _extract_markdown_code_blocks(text: str) -> list[str]:
+    blocks: list[str] = []
+    marker = "```"
+    parts = text.split(marker)
+    for index in range(1, len(parts), 2):
+        block = parts[index]
+        if "\n" in block:
+            block = block.split("\n", 1)[1]
+        if block.strip():
+            blocks.append(block)
+    return blocks
+
+
+def _strip_code_noise(line: str) -> str:
+    line = line.strip()
+    if not line:
+        return ""
+    if line.startswith(("#", "//", "<!--", "*")):
+        return ""
+    return line
+
+
+def _contains_code_markers(text: str) -> bool:
+    value = text or ""
+    markers = (
+        "function ",
+        "const ",
+        "let ",
+        "var ",
+        "return ",
+        "import ",
+        "from ",
+        "def ",
+        "class ",
+        "public class ",
+        "private ",
+        "protected ",
+        "#include",
+        "</",
+        "<div",
+        "<section",
+        "{",
+        "};",
+    )
+    lower = value.lower()
+    return any(marker in lower for marker in markers)
+
+
+def _looks_like_incomplete_code(code: str) -> bool:
+    value = (code or "").rstrip()
+    if not value:
+        return False
+    lines = [_strip_code_noise(line) for line in value.splitlines()]
+    lines = [line for line in lines if line]
+    if not lines:
+        return False
+
+    last = lines[-1]
+    if last.endswith(("...", "{", "(", "[", ",", "\\", "=", "+", "-", "*", "/", ":", ".", "&&", "||")):
+        return True
+    if last in {"else", "try", "finally", "do"}:
+        return True
+    if last.lower() in {"else:", "try:", "finally:", "except:", "elif:"}:
+        return True
+
+    brackets = _bracket_balance(value)
+    if brackets["open"] > brackets["close"]:
+        return True
+
+    if _looks_like_html(value) and _has_unclosed_html_tag(value):
+        return True
+
+    return False
+
+
+def _bracket_balance(code: str) -> dict[str, int]:
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    opening = set(pairs)
+    closing = set(pairs.values())
+    stack: list[str] = []
+    quote = ""
+    escaped = False
+    line_comment = False
+    block_comment = False
+    open_count = 0
+    close_count = 0
+
+    for index, char in enumerate(code):
+        next_char = code[index + 1] if index + 1 < len(code) else ""
+        if line_comment:
+            if char == "\n":
+                line_comment = False
+            continue
+        if block_comment:
+            if char == "*" and next_char == "/":
+                block_comment = False
+            continue
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            continue
+        if char == "/" and next_char == "/":
+            line_comment = True
+            continue
+        if char == "/" and next_char == "*":
+            block_comment = True
+            continue
+        if char in opening:
+            stack.append(pairs[char])
+            open_count += 1
+        elif char in closing:
+            close_count += 1
+            if stack and stack[-1] == char:
+                stack.pop()
+    return {"open": open_count, "close": close_count, "unclosed": len(stack)}
+
+
+def _looks_like_html(code: str) -> bool:
+    return "<" in code and ">" in code and any(tag in code.lower() for tag in ("<div", "<section", "<html", "<body", "<script", "<style", "<template"))
+
+
+def _has_unclosed_html_tag(code: str) -> bool:
+    import re
+
+    void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+    stack: list[str] = []
+    for match in re.finditer(r"<\s*(/)?\s*([a-zA-Z][\w:-]*)(?:\s[^<>]*)?>", code):
+        closing, tag = match.group(1), match.group(2).lower()
+        raw = match.group(0)
+        if tag in void_tags or raw.endswith("/>") or raw.startswith("<!--"):
+            continue
+        if closing:
+            if tag in stack:
+                while stack:
+                    current = stack.pop()
+                    if current == tag:
+                        break
+        else:
+            stack.append(tag)
+    return bool(stack)
 
 
 def _continuation_prompt() -> str:

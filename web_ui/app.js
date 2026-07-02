@@ -378,6 +378,13 @@ function extractCodeBlocks(text, includeOpenBlock = false) {
   return blocks;
 }
 
+function pickBestCodeBlock(blocks) {
+  if (!blocks.length) return null;
+  return blocks.reduce((best, block) => (
+    block.code.length >= best.code.length ? block : best
+  ), blocks[0]);
+}
+
 function looksLikeCode(text) {
   const value = String(text || "").trim();
   if (!value) return false;
@@ -408,7 +415,7 @@ function setGeneratedCodeFromText(text, metaPrefix = "extracted from latest agen
   if (!force && state.activeFile && state.activeFile !== "Generated Code") return false;
   if (state.editorDirty) return false;
   const blocks = extractCodeBlocks(text, true);
-  const block = blocks.length ? blocks[blocks.length - 1] : (force ? inferCodeBlockFromText(text) : null);
+  const block = blocks.length ? pickBestCodeBlock(blocks) : (force ? inferCodeBlockFromText(text) : null);
   if (!block) return false;
   setCodePreview(
     "Generated Code",
