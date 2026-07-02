@@ -10,6 +10,44 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+function installEditorMetricStyles() {
+  if (document.getElementById("editorMetricStyles")) return;
+  const style = document.createElement("style");
+  style.id = "editorMetricStyles";
+  style.textContent = `
+    .code-highlight,
+    .code-highlight code,
+    .code-editor {
+      font-family: Consolas, "SFMono-Regular", "Cascadia Mono", "IBM Plex Mono", ui-monospace, monospace !important;
+      font-size: 13px !important;
+      font-weight: 400 !important;
+      line-height: 20px !important;
+      letter-spacing: 0 !important;
+      word-spacing: 0 !important;
+      tab-size: 2 !important;
+      font-variant-ligatures: none !important;
+      font-kerning: none !important;
+      white-space: pre !important;
+      overflow-wrap: normal !important;
+      word-break: normal !important;
+    }
+    .code-highlight,
+    .code-editor {
+      padding: 16px !important;
+      overflow: auto !important;
+    }
+    .code-highlight code {
+      display: block !important;
+      min-width: max-content !important;
+    }
+    .code-editor {
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 async function api(path, options = {}) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -178,10 +216,19 @@ function renderCodeHighlight() {
   if (highlight) {
     highlight.innerHTML = `<code>${highlightCode(visibleCode, state.generatedInfo)}</code>`;
   }
+  syncEditorHighlightScroll();
 }
 
 function setCodePreview(title, meta, content, info = "txt") {
   setCodeEditorContent(title, meta, content, info);
+}
+
+function syncEditorHighlightScroll() {
+  const highlight = $("codeHighlight");
+  const editor = $("codeEditor");
+  if (!highlight || !editor) return;
+  highlight.scrollTop = editor.scrollTop;
+  highlight.scrollLeft = editor.scrollLeft;
 }
 
 function renderState(data) {
@@ -787,10 +834,7 @@ $("codeEditor").addEventListener("input", () => {
   updateTokenUsage();
 });
 $("codeEditor").addEventListener("scroll", () => {
-  const highlight = $("codeHighlight");
-  if (!highlight) return;
-  highlight.scrollTop = $("codeEditor").scrollTop;
-  highlight.scrollLeft = $("codeEditor").scrollLeft;
+  syncEditorHighlightScroll();
 });
 $("promptInput").addEventListener("input", updateTokenUsage);
 $("chatForm").addEventListener("submit", async (event) => {
@@ -802,6 +846,7 @@ $("chatForm").addEventListener("submit", async (event) => {
   await sendPrompt(prompt);
 });
 
+installEditorMetricStyles();
 refresh().catch((err) => {
   $("messages").innerHTML = `<article class="message assistant"><span class="role">error</span>${escapeHtml(err.message)}</article>`;
 });
