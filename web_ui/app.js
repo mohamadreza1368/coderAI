@@ -33,7 +33,7 @@ function installEditorMetricStyles() {
     }
     .code-highlight,
     .code-editor {
-      padding: 16px !important;
+      padding: 16px 16px 16px 62px !important;
       overflow: auto !important;
     }
     .code-highlight code {
@@ -231,10 +231,23 @@ function syncEditorHighlightScroll() {
   highlight.scrollLeft = editor.scrollLeft;
 }
 
+function activateTab(name) {
+  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  document.querySelectorAll(".tab-page").forEach((p) => p.classList.remove("active"));
+  $(`${name}Tab`)?.classList.add("active");
+}
+
+function setActiveActivity(label) {
+  document.querySelectorAll(".activity-btn").forEach((btn) => {
+    btn.classList.toggle("active", btn.getAttribute("aria-label") === label);
+  });
+}
+
 function renderState(data) {
   state.data = data;
   const ws = data.workspace;
   $("workspacePath").textContent = ws.path;
+  if ($("statusModel")) $("statusModel").textContent = data.settings.model || "Model ready";
   $("workspaceInput").value = ws.path;
   $("fileCount").textContent = ws.stats.files;
   $("totalKb").textContent = `${ws.stats.kb}KB`;
@@ -793,10 +806,26 @@ async function sendPrompt(prompt) {
 
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-    document.querySelectorAll(".tab-page").forEach((p) => p.classList.remove("active"));
-    tab.classList.add("active");
-    $(`${tab.dataset.tab}Tab`).classList.add("active");
+    activateTab(tab.dataset.tab);
+    setActiveActivity(tab.dataset.tab === "settings" ? "Settings" : "Explorer");
+  });
+});
+
+document.querySelectorAll(".activity-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const label = btn.getAttribute("aria-label");
+    setActiveActivity(label);
+    if (label === "Explorer") {
+      activateTab("files");
+      $("fileSearch").focus();
+    } else if (label === "Search") {
+      activateTab("files");
+      $("fileSearch").focus();
+    } else if (label === "Agent") {
+      $("promptInput").focus();
+    } else if (label === "Settings") {
+      activateTab("settings");
+    }
   });
 });
 
