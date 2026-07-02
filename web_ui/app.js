@@ -174,7 +174,10 @@ function setCodeEditorContent(title, meta, content, info = "txt") {
 function renderCodeHighlight() {
   const code = $("codeEditor").value;
   const visibleCode = code || "Select or generate code to edit it here.";
-  $("codeHighlight").innerHTML = `<code>${highlightCode(visibleCode, state.generatedInfo)}</code>`;
+  const highlight = $("codeHighlight");
+  if (highlight) {
+    highlight.innerHTML = `<code>${highlightCode(visibleCode, state.generatedInfo)}</code>`;
+  }
 }
 
 function setCodePreview(title, meta, content, info = "txt") {
@@ -375,12 +378,38 @@ function extractCodeBlocks(text, includeOpenBlock = false) {
   return blocks;
 }
 
+function looksLikeCode(text) {
+  const value = String(text || "").trim();
+  if (!value) return false;
+  const codeMarkers = [
+    /(^|\n)\s*(import|from|def|class|function|const|let|var|return|async|await)\b/,
+    /(^|\n)\s*(if|for|while|try|catch|switch)\s*[\(\w]/,
+    /<\/?[a-z][\s\S]*>/i,
+    /[{;}]\s*$/,
+    /(^|\n)\s*#include\b/,
+    /(^|\n)\s*(public|private|protected)\s+(class|static|void|int|string)\b/i,
+  ];
+  return codeMarkers.some((pattern) => pattern.test(value));
+}
+
+function inferCodeBlockFromText(text) {
+  const value = String(text || "").trim();
+  if (!looksLikeCode(value)) return null;
+  let info = "txt";
+  if (/(^|\n)\s*(from|import|def|class)\b/.test(value)) info = "python";
+  else if (/<\/?[a-z][\s\S]*>/i.test(value)) info = "html";
+  else if (/(^|\n)\s*(function|const|let|var|export|import)\b/.test(value)) info = "javascript";
+  else if (/(^|\n)\s*(public|private|protected)\s+(class|static|void|int|string)\b/i.test(value)) info = "java";
+  else if (/(^|\n)\s*[.#]?[a-z0-9_-]+\s*\{/.test(value)) info = "css";
+  return { info, code: value };
+}
+
 function setGeneratedCodeFromText(text, metaPrefix = "extracted from latest agent response", force = false) {
   if (!force && state.activeFile && state.activeFile !== "Generated Code") return false;
   if (state.editorDirty) return false;
   const blocks = extractCodeBlocks(text, true);
-  if (!blocks.length) return false;
-  const block = blocks[blocks.length - 1];
+  const block = blocks.length ? blocks[blocks.length - 1] : (force ? inferCodeBlockFromText(text) : null);
+  if (!block) return false;
   setCodePreview(
     "Generated Code",
     `${block.info || "text"} · ${block.code.length.toLocaleString()} chars · ${metaPrefix}`,
@@ -751,8 +780,10 @@ $("codeEditor").addEventListener("input", () => {
   updateTokenUsage();
 });
 $("codeEditor").addEventListener("scroll", () => {
-  $("codeHighlight").scrollTop = $("codeEditor").scrollTop;
-  $("codeHighlight").scrollLeft = $("codeEditor").scrollLeft;
+  const highlight = $("codeHighlight");
+  if (!highlight) return;
+  highlight.scrollTop = $("codeEditor").scrollTop;
+  highlight.scrollLeft = $("codeEditor").scrollLeft;
 });
 $("promptInput").addEventListener("input", updateTokenUsage);
 $("chatForm").addEventListener("submit", async (event) => {
