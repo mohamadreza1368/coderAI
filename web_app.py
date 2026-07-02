@@ -1155,6 +1155,8 @@ class Handler(BaseHTTPRequestHandler):
         mime = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", mime)
+        if target.suffix.lower() in {".js", ".css"}:
+            self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)

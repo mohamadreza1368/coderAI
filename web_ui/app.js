@@ -589,13 +589,23 @@ async function scanProject() {
 
 async function sendPrompt(prompt) {
   setLoading(true, "Sending prompt...", true);
-  let streamTarget = null;
+  let streamTarget = appendStreamingAssistant();
+  streamTarget.textContent = "Preparing request...";
   let streamText = "";
   let sawDone = false;
   const activeContext = currentActiveContext();
   state.editorDirty = false;
+  const ensureStreamTarget = (placeholder = "Working...") => {
+    if (!streamTarget || !streamTarget.isConnected) {
+      streamTarget = appendStreamingAssistant();
+    }
+    if (!streamText && placeholder) {
+      streamTarget.textContent = placeholder;
+    }
+    return streamTarget;
+  };
   const showStreamNotice = (message) => {
-    if (!streamTarget) streamTarget = appendStreamingAssistant();
+    ensureStreamTarget("");
     if (streamText) {
       streamText += `\n\n${message}`;
       streamTarget.textContent = streamText;
@@ -635,10 +645,12 @@ async function sendPrompt(prompt) {
         }
         if (event.type === "state") {
           renderState(event.state);
+          ensureStreamTarget("Preparing context...");
         } else if (event.type === "status") {
           setLoading(true, event.message);
+          ensureStreamTarget(event.message || "Working...");
         } else if (event.type === "token") {
-          if (!streamTarget) streamTarget = appendStreamingAssistant();
+          ensureStreamTarget("");
           streamText += event.content || "";
           streamTarget.textContent = streamText;
           updateGeneratedCodeFromStreaming(streamText);
