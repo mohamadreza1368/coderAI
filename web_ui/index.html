@@ -4,48 +4,89 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ollama Agentic Workspace</title>
-  <link rel="stylesheet" href="/styles.css?v=20260630-1">
+  <link rel="stylesheet" href="/styles.css?v=enterprise-ide-1">
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
       <div class="brand">
-        <span class="status-dot"></span>
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7l9 5 9-5-9-5Z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
+        </span>
         <div>
           <strong>Ollama Agentic Workspace</strong>
           <span id="workspacePath">Loading workspace...</span>
         </div>
       </div>
+
+      <div class="signal-rail" title="Pipeline status">
+        <span class="signal is-workspace"><span class="signal-dot"></span><span class="signal-label">Workspace</span></span>
+        <span class="signal-sep"></span>
+        <span class="signal is-editor"><span class="signal-dot"></span><span class="signal-label">Editor</span></span>
+        <span class="signal-sep"></span>
+        <span class="signal is-agent"><span class="signal-dot"></span><span class="signal-label">Agent</span></span>
+      </div>
+
       <div class="top-actions">
         <select id="connMode" title="Connection mode">
           <option>🖥️ Local Ollama</option>
           <option>🔑 Custom API</option>
         </select>
         <select id="modelSelect" title="Model"></select>
-        <button id="refreshModels" type="button" title="Refresh Ollama models">Refresh</button>
-        <button id="clearChat" type="button">Clear</button>
+        <button id="refreshModels" type="button" class="ghost" title="Refresh Ollama models">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.36"/><path d="M21 4v6h-6"/></svg>
+          Refresh
+        </button>
+        <button id="clearChat" type="button" class="ghost">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
+          Clear
+        </button>
       </div>
     </header>
 
     <section id="customApiPanel" class="custom-api-panel">
       <label>API Base URL <input id="topCustomApiUrl" placeholder="https://api.openai.com/v1"></label>
       <label>API Key <input id="topCustomApiKey" type="password" placeholder="sk-..."></label>
-      <button id="saveTopCustomApi" type="button">Save API</button>
+      <button id="saveTopCustomApi" type="button" class="primary">Save API</button>
     </section>
 
-    <main class="layout">
-      <aside class="workspace-panel">
+    <div class="workbench">
+      <nav class="activity-rail" aria-label="Primary navigation">
+        <button class="activity-btn active" type="button" title="Explorer" aria-label="Explorer">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
+        </button>
+        <button class="activity-btn" type="button" title="Search" aria-label="Search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        </button>
+        <button class="activity-btn" type="button" title="Agent" aria-label="Agent">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2"/><path d="M12 7V3"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
+        </button>
+        <button class="activity-btn" type="button" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+        </button>
+      </nav>
+
+      <main class="layout">
+        <aside class="workspace-panel">
         <section class="panel-head">
           <div>
-            <h1>Workspace</h1>
+            <h1>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
+              Workspace
+            </h1>
             <p>Project files and generated artifacts</p>
           </div>
-          <button id="scanBtn" type="button">Scan</button>
+          <button id="scanBtn" type="button" class="primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            Scan
+          </button>
         </section>
 
         <section class="path-row">
           <input id="workspaceInput" placeholder="C:\path\to\project">
-          <button id="browseWorkspace" type="button">Browse</button>
+          <button id="browseWorkspace" type="button" class="ghost" title="Browse for a folder">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
+          </button>
           <button id="openWorkspace" type="button">Open</button>
         </section>
 
@@ -69,7 +110,10 @@
 
         <section id="skillsTab" class="tab-page">
           <div class="tab-actions">
-            <button id="testSkills" type="button">Test skills</button>
+            <button id="testSkills" type="button" class="ghost">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6l-5 9a1.5 1.5 0 0 0 1.3 2.2h11.4A1.5 1.5 0 0 0 19 18l-5-9V3"/></svg>
+              Test skills
+            </button>
             <span id="skillsStatus">Not tested</span>
           </div>
           <div id="skillsList" class="skills-list"></div>
@@ -81,31 +125,65 @@
           <div class="prompt-editor">
             <div class="prompt-editor-head">
               <strong id="selectedPromptName">Custom system prompt</strong>
-              <button id="savePrompt" type="button">Use edited prompt</button>
+              <button id="savePrompt" type="button" class="primary">Use edited prompt</button>
             </div>
             <textarea id="systemPromptEditor" spellcheck="false"></textarea>
           </div>
         </section>
 
         <section id="settingsTab" class="tab-page settings">
-          <label>Temperature <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.4"></label>
-          <label><input id="thinking" type="checkbox"> Deep thinking</label>
-          <label><input id="autoContinue" type="checkbox"> Auto-continue incomplete generations</label>
-          <label><input id="memoryEnabled" type="checkbox"> Compact long chat memory</label>
-          <label>Context token budget <input id="contextTokenBudget" type="number" min="4000" max="200000" step="1000" value="24000"></label>
-          <label>Response token budget <input id="responseTokenBudget" type="number" min="512" max="64000" step="512" value="8192"></label>
-          <div class="settings-group">
+          <div class="settings-card">
+            <span class="settings-card-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+              Model &amp; runtime
+            </span>
+            <label>Temperature <input id="temperature" type="number" min="0" max="2" step="0.1" value="0.4"></label>
+            <label><input id="thinking" type="checkbox"> Deep thinking</label>
+            <label><input id="autoContinue" type="checkbox"> Auto-continue incomplete generations</label>
+          </div>
+
+          <div class="settings-card">
+            <span class="settings-card-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/></svg>
+              Context &amp; memory
+            </span>
+            <div class="field-row">
+              <label>Context tokens <input id="contextTokenBudget" type="number" min="4000" max="200000" step="1000" value="24000"></label>
+              <label>Response tokens <input id="responseTokenBudget" type="number" min="512" max="64000" step="512" value="8192"></label>
+            </div>
+            <label><input id="memoryEnabled" type="checkbox"> Compact long chat memory</label>
+            <div class="memory-box">
+              <span id="memoryStats">Memory: loading...</span>
+              <button id="compactMemory" type="button" class="ghost">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v4"/><path d="M16 3v4"/><path d="M4 11h16"/><rect x="4" y="5" width="16" height="16" rx="2"/></svg>
+                Compact now
+              </button>
+            </div>
+          </div>
+
+          <div class="settings-card">
+            <span class="settings-card-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+              Web search
+            </span>
             <label><input id="tavilyEnabled" type="checkbox"> Tavily web search</label>
             <label id="tavilyKeyRow">Tavily API Key <input id="tavilyApiKey" type="password" placeholder="tvly-..."></label>
             <span id="tavilyStatus">Tavily is disabled</span>
           </div>
-          <div class="memory-box">
-            <span id="memoryStats">Memory: loading...</span>
-            <button id="compactMemory" type="button">Compact now</button>
+
+          <div class="settings-card">
+            <span class="settings-card-title">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+              Custom API
+            </span>
+            <label>Custom API URL <input id="customApiUrl" placeholder="https://api.openai.com/v1"></label>
+            <label>Custom API Key <input id="customApiKey" type="password" placeholder="optional"></label>
           </div>
-          <label>Custom API URL <input id="customApiUrl" placeholder="https://api.openai.com/v1"></label>
-          <label>Custom API Key <input id="customApiKey" type="password" placeholder="optional"></label>
-          <button id="saveSettings" type="button">Save settings</button>
+
+          <button id="saveSettings" type="button" class="primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
+            Save settings
+          </button>
         </section>
       </aside>
 
@@ -117,12 +195,18 @@
           </div>
           <div class="editor-actions">
             <span id="editorLanguage" class="editor-language">text</span>
-            <button id="downloadCode" type="button" disabled>Download</button>
-            <button id="attachFile" type="button" disabled>Ask AI</button>
+            <button id="downloadCode" type="button" class="ghost" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M5 21h14"/></svg>
+              Download
+            </button>
+            <button id="attachFile" type="button" class="ghost" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><path d="m5.6 5.6 2.8 2.8"/><path d="m15.6 15.6 2.8 2.8"/><path d="m18.4 5.6-2.8 2.8"/><path d="m8.4 15.6-2.8 2.8"/></svg>
+              Ask AI
+            </button>
           </div>
         </div>
         <div id="codeEditorWrap" class="code-editor-wrap empty">
-          <pre id="codeHighlight" class="code-highlight" aria-hidden="true"><code>Select a project file to preview its contents.</code></pre>
+          <pre id="codeHighlight" class="code-highlight" aria-hidden="true"><code> .</code></pre>
           <textarea id="codeEditor" class="code-editor" spellcheck="false" wrap="off" placeholder="Select or generate code to edit it here." disabled></textarea>
         </div>
       </section>
@@ -130,7 +214,10 @@
       <aside class="agent-panel">
         <section class="agent-head">
           <div>
-            <h1>Agent</h1>
+            <h1>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2"/><path d="M12 7V3"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
+              Agent
+            </h1>
             <p>Explanations, tool calls, and reports</p>
           </div>
           <div id="tokenMeter" class="token-meter" title="Context window usage">
@@ -147,10 +234,21 @@
         <section id="messages" class="messages"></section>
         <form id="chatForm" class="composer">
           <textarea id="promptInput" placeholder="Write your request..."></textarea>
-          <button type="submit">Send</button>
+          <button type="submit" class="primary">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7Z"/><path d="M11 13 22 2"/></svg>
+            Send
+          </button>
         </form>
-      </aside>
-    </main>
+        </aside>
+      </main>
+    </div>
+
+    <footer class="statusbar">
+      <span>main</span>
+      <span>UTF-8</span>
+      <span id="statusModel">Model ready</span>
+      <span>Agent workspace</span>
+    </footer>
   </div>
   <div id="loadingOverlay" class="loading-overlay">
     <div class="loader-card">
@@ -159,6 +257,6 @@
       <span id="loadingText">Preparing...</span>
     </div>
   </div>
-  <script src="/app.js?v=20260630-1"></script>
+  <script src="/app.js?v=enterprise-ide-1"></script>
 </body>
 </html>
