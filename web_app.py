@@ -45,7 +45,7 @@ MAX_ITERATIONS = 10
 REQUEST_TIMEOUT = int(os.getenv("AGENT_REQUEST_TIMEOUT", "1800"))
 DEFAULT_CONTEXT_TOKEN_BUDGET = int(os.getenv("AGENT_CONTEXT_TOKENS", "24000"))
 DEFAULT_RESPONSE_TOKEN_BUDGET = int(os.getenv("AGENT_RESPONSE_TOKENS", "8192"))
-MAX_AUTO_CONTINUES = int(os.getenv("AGENT_AUTO_CONTINUES", "2"))
+MAX_AUTO_CONTINUES = int(os.getenv("AGENT_AUTO_CONTINUES", "4"))
 
 try:
     from litellm import token_counter as _litellm_token_counter
@@ -660,6 +660,10 @@ def _use_langchain_runtime() -> bool:
     return os.getenv("AGENT_USE_LANGCHAIN", "true").lower() not in {"0", "false", "no"}
 
 
+def _use_langchain_streaming_runtime() -> bool:
+    return os.getenv("AGENT_USE_LANGCHAIN_STREAMING", "false").lower() in {"1", "true", "yes"}
+
+
 def _runtime_settings() -> RuntimeSettings:
     return RuntimeSettings(
         conn_mode=STATE["conn_mode"],
@@ -747,7 +751,7 @@ def _merge_custom_tool_delta(tool_calls: dict, delta_calls: list[dict]) -> None:
 def _call_model_stream(history: list[dict], write_event) -> dict:
     response_budget = max(512, int(STATE.get("response_token_budget") or DEFAULT_RESPONSE_TOKEN_BUDGET))
     conn_mode = STATE["conn_mode"]
-    if _use_langchain_runtime() and lc_runtime.supports(conn_mode):
+    if _use_langchain_runtime() and _use_langchain_streaming_runtime() and lc_runtime.supports(conn_mode):
         return lc_runtime.stream(history, _active_tool_schemas(), _runtime_settings(), write_event)
 
     content_parts: list[str] = []
@@ -830,6 +834,25 @@ def _hit_generation_limit(result: dict) -> bool:
     return reason in {"length", "max_tokens"} or "length" in reason or "limit" in reason
 
 
+def _looks_incomplete_generation(text: str) -> bool:
+    stripped = (text or "").rstrip()
+    if not stripped:
+        return False
+    if stripped.count("```") % 2 == 1:
+        return True
+    tail = stripped[-240:].lower()
+    unfinished_markers = (
+        "continue",
+        "continued",
+        "the rest",
+        "remaining code",
+        "next part",
+    )
+    if any(marker in tail for marker in unfinished_markers):
+        return True
+    return stripped.endswith(("{", "(", "[", ",", "\\", "=", "+", "-", "*", "/", ":", "&&", "||"))
+
+
 def _continuation_prompt() -> str:
     return (
         "Continue exactly from where you stopped. Do not restart, do not summarize, "
@@ -866,7 +889,8 @@ def _run_agent_loop(api_messages: list[dict]) -> tuple[str, str, list[dict]]:
                 history.append(tool_message)
             continue
         response_text += result["content"]
-        if STATE.get("auto_continue") and _hit_generation_limit(result) and auto_continues < MAX_AUTO_CONTINUES:
+        needs_continue = _hit_generation_limit(result) or _looks_incomplete_generation(response_text)
+        if STATE.get("auto_continue") and needs_continue and auto_continues < MAX_AUTO_CONTINUES:
             auto_continues += 1
             history.append({"role": "assistant", "content": result["content"] or ""})
             history.append({"role": "user", "content": _continuation_prompt()})
@@ -981,11 +1005,14 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
                 continue
 
             response_text += result["content"]
-            if STATE.get("auto_continue") and _hit_generation_limit(result) and auto_continues < MAX_AUTO_CONTINUES:
+            hit_limit = _hit_generation_limit(result)
+            looks_incomplete = _looks_incomplete_generation(response_text)
+            if STATE.get("auto_continue") and (hit_limit or looks_incomplete) and auto_continues < MAX_AUTO_CONTINUES:
                 auto_continues += 1
+                reason = "token limit" if hit_limit else "incomplete output"
                 write_event({
                     "type": "status",
-                    "message": f"Output hit token limit; continuing automatically ({auto_continues}/{MAX_AUTO_CONTINUES})...",
+                    "message": f"Output hit {reason}; continuing automatically ({auto_continues}/{MAX_AUTO_CONTINUES})...",
                 })
                 history.append({"role": "assistant", "content": result["content"] or ""})
                 history.append({"role": "user", "content": _continuation_prompt()})
@@ -1056,6 +1083,7 @@ def _client_state() -> dict:
         "runtime": {
             "langchain_available": lc_runtime.available,
             "langchain_enabled": _use_langchain_runtime(),
+            "langchain_streaming_enabled": _use_langchain_streaming_runtime(),
             "langchain_error": lc_runtime.error,
         },
         "context_usage": _context_usage_snapshot(),

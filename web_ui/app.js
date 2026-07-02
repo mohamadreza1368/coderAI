@@ -591,8 +591,19 @@ async function sendPrompt(prompt) {
   setLoading(true, "Sending prompt...", true);
   let streamTarget = null;
   let streamText = "";
+  let sawDone = false;
   const activeContext = currentActiveContext();
   state.editorDirty = false;
+  const showStreamNotice = (message) => {
+    if (!streamTarget) streamTarget = appendStreamingAssistant();
+    if (streamText) {
+      streamText += `\n\n${message}`;
+      streamTarget.textContent = streamText;
+    } else {
+      streamTarget.textContent = message;
+    }
+    $("messages").scrollTop = $("messages").scrollHeight;
+  };
   try {
     const res = await fetch("/api/chat_stream", {
       method: "POST",
@@ -615,7 +626,13 @@ async function sendPrompt(prompt) {
       buffer = lines.pop() || "";
       for (const line of lines) {
         if (!line.trim()) continue;
-        const event = JSON.parse(line);
+        let event;
+        try {
+          event = JSON.parse(line);
+        } catch (err) {
+          showStreamNotice(`[stream parse error] ${err.message}`);
+          continue;
+        }
         if (event.type === "state") {
           renderState(event.state);
         } else if (event.type === "status") {
@@ -632,13 +649,31 @@ async function sendPrompt(prompt) {
         } else if (event.type === "tool_result") {
           appendToolStatus(`${event.name} result`, String(event.result || "").slice(0, 1200));
         } else if (event.type === "error") {
-          if (!streamTarget) streamTarget = appendStreamingAssistant();
-          streamTarget.textContent = event.message || "Error";
+          showStreamNotice(event.message || "Error");
         } else if (event.type === "done") {
+          sawDone = true;
           renderState(event.state);
         }
       }
     }
+    if (buffer.trim()) {
+      try {
+        const event = JSON.parse(buffer.trim());
+        if (event.type === "done") {
+          sawDone = true;
+          renderState(event.state);
+        } else if (event.type === "error") {
+          showStreamNotice(event.message || "Error");
+        }
+      } catch (err) {
+        showStreamNotice(`[stream ended with partial data] ${err.message}`);
+      }
+    }
+    if (!sawDone) {
+      showStreamNotice("[stream ended before the agent sent a final state]");
+    }
+  } catch (err) {
+    showStreamNotice(`Agent stream error: ${err.message}`);
   } finally {
     setLoading(false);
   }
@@ -696,6 +731,7 @@ $("chatForm").addEventListener("submit", async (event) => {
   const prompt = $("promptInput").value.trim();
   if (!prompt) return;
   $("promptInput").value = "";
+  updateTokenUsage();
   await sendPrompt(prompt);
 });
 

@@ -131,6 +131,7 @@ Please retain the attribution in the `NOTICE` file when redistributing this proj
 - LangChain is used as the preferred model runtime for Local Ollama and OpenAI-compatible Custom API mode.
 - If LangChain provider packages are unavailable, the app falls back to the built-in HTTP runtime.
 - Set `AGENT_USE_LANGCHAIN=false` to force the built-in HTTP runtime during debugging.
+- Streaming uses the built-in HTTP runtime by default for stability; set `AGENT_USE_LANGCHAIN_STREAMING=true` to test LangChain streaming.
 - LiteLLM is used only for token counting. If it is unavailable, the app falls back to conservative character-based estimates.
 - `LITELLM_LOCAL_MODEL_COST_MAP=True` is set to prevent LiteLLM from trying to refresh its model-cost map from the internet.
 - Tool access is constrained to the selected workspace where file operations are involved.
