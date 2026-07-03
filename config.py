@@ -17,14 +17,13 @@ for _var in _PROXY_VARS:
 
 os.environ["OLLAMA_HOST"] = "http://127.0.0.1:11434"
 
-# Keep LiteLLM fully local for token counting. Without this, LiteLLM tries to
-# refresh its model price/context map from GitHub on import and logs noisy SSL
-# timeout warnings before falling back to the bundled backup anyway.
+# Keep LiteLLM fully local for token counting.
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 os.environ.setdefault("LITELLM_LOG", "ERROR")
 
-# Remote URL config.
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ai.ime.co.ir/ollama/api/generate")
+# Remote URL config. Override via OLLAMA_URL environment variable.
+# Default points to a local Ollama instance consistent with Local Ollama mode.
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
 _BASE      = OLLAMA_URL.rsplit("/api/", 1)[0]
 TAGS_URL   = f"{_BASE}/api/tags"
 CHAT_URL   = f"{_BASE}/api/chat"
@@ -59,8 +58,8 @@ SESSION_DEFAULTS: dict = {
     "custom_api_url":    "https://api.openai.com/v1",
     "custom_api_key":    "",
     "selected_file_tab": None,
-    "workspace_path":    "",     # User project path. Empty means the default agent_workspace.
-    "used_skills_log":   [],     # Skills used for each response.
+    "workspace_path":    "",
+    "used_skills_log":   [],
 }
 
 # Extension map for workspace file naming.

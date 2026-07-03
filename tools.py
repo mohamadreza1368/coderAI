@@ -27,6 +27,83 @@ _DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
 WORKSPACE_DIR: Path = _DEFAULT_WORKSPACE
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ── Execution Approval State
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ToolApprovalRequired(Exception):
+    """Raised when a tool call requires explicit user approval before execution."""
+    def __init__(self, tool_name: str, arguments: dict, preview: str):
+        self.tool_name = tool_name
+        self.arguments = arguments
+        self.preview = preview
+        super().__init__(f"Approval required for {tool_name}")
+
+
+_approval_state: dict = {
+    "pending": False,
+    "tool_name": "",
+    "arguments": {},
+    "preview": "",
+    "approved": False,
+    "rejected": False,
+    "rejection_reason": "",
+    "always_allow": False,
+}
+
+
+def get_approval_state() -> dict:
+    """Return a copy of the current approval state."""
+    return dict(_approval_state)
+
+
+def approve_pending(always_allow_for_session: bool = False) -> None:
+    """Mark the pending approval request as approved."""
+    global _approval_state
+    _approval_state["approved"] = True
+    _approval_state["rejected"] = False
+    _approval_state["pending"] = False
+    if always_allow_for_session:
+        _approval_state["always_allow"] = True
+
+
+def reject_pending(reason: str = "") -> None:
+    """Mark the pending approval request as rejected."""
+    global _approval_state
+    _approval_state["rejected"] = True
+    _approval_state["approved"] = False
+    _approval_state["pending"] = False
+    _approval_state["rejection_reason"] = reason or ""
+
+
+def clear_approval_state() -> None:
+    """Reset approval state (call on chat reset)."""
+    global _approval_state
+    _approval_state = {
+        "pending": False,
+        "tool_name": "",
+        "arguments": {},
+        "preview": "",
+        "approved": False,
+        "rejected": False,
+        "rejection_reason": "",
+        "always_allow": False,
+    }
+
+
+def _request_approval(tool_name: str, arguments: dict, preview: str) -> None:
+    """Set pending approval state and raise ToolApprovalRequired."""
+    global _approval_state
+    _approval_state["pending"] = True
+    _approval_state["tool_name"] = tool_name
+    _approval_state["arguments"] = arguments
+    _approval_state["preview"] = preview
+    _approval_state["approved"] = False
+    _approval_state["rejected"] = False
+    _approval_state["rejection_reason"] = ""
+    raise ToolApprovalRequired(tool_name, arguments, preview)
+
+
 def set_workspace(path: str | Path) -> tuple[bool, str]:
     """
     Change the active workspace.
@@ -424,7 +501,6 @@ def tool_write_file(path: str, content: str) -> str:
 def tool_list_files(pattern: str = "**/*") -> str:
     try:
         ws = get_workspace()
-        # Ignored paths.
         IGNORE = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'dist', 'build', '.next'}
         matches = []
         for p in sorted(ws.glob(pattern)):
@@ -453,6 +529,16 @@ def tool_list_files(pattern: str = "**/*") -> str:
 
 
 def tool_run_bash(command: str) -> str:
+    if not _approval_state["always_allow"]:
+        if not _approval_state["approved"] or _approval_state["tool_name"] != "run_bash":
+            _request_approval("run_bash", {"command": command}, command)
+        # Clear approval flag after consuming it
+        _approval_state["approved"] = False
+        _approval_state["tool_name"] = ""
+    if _approval_state.get("rejected"):
+        reason = _approval_state.get("rejection_reason") or "User rejected execution."
+        _approval_state["rejected"] = False
+        return f"Execution rejected: {reason}"
     try:
         result = subprocess.run(
             command, shell=True, cwd=str(get_workspace()),
@@ -473,6 +559,16 @@ def tool_run_bash(command: str) -> str:
 
 
 def tool_run_python(code: str) -> str:
+    if not _approval_state["always_allow"]:
+        if not _approval_state["approved"] or _approval_state["tool_name"] != "run_python":
+            _request_approval("run_python", {"code": code}, code)
+        # Clear approval flag after consuming it
+        _approval_state["approved"] = False
+        _approval_state["tool_name"] = ""
+    if _approval_state.get("rejected"):
+        reason = _approval_state.get("rejection_reason") or "User rejected execution."
+        _approval_state["rejected"] = False
+        return f"Execution rejected: {reason}"
     tmp = get_workspace() / "__tmp_agent__.py"
     try:
         tmp.write_text(code, encoding="utf-8")
@@ -686,7 +782,6 @@ def tool_scan_project(max_files: int = 200) -> str:
     IGNORE = {'.git', '__pycache__', 'node_modules', '.venv', 'venv',
               '.idea', '.vscode', 'dist', 'build', '.next', '.mypy_cache'}
 
-    # Collect all files.
     all_files: list[Path] = []
     for p in sorted(ws.rglob("*")):
         if p.is_file():
@@ -697,13 +792,11 @@ def tool_scan_project(max_files: int = 200) -> str:
     if not all_files:
         return "The project is empty."
 
-    # Extension statistics.
     ext_count: dict[str, int] = {}
     for f in all_files:
         ext = f.suffix.lower() or "(no extension)"
         ext_count[ext] = ext_count.get(ext, 0) + 1
 
-    # Important config/dependency files.
     CONFIG_FILES = {
         "requirements.txt", "pyproject.toml", "setup.py", "Pipfile",
         "package.json", "package-lock.json", "yarn.lock",
@@ -713,7 +806,6 @@ def tool_scan_project(max_files: int = 200) -> str:
     }
     found_configs = [f for f in all_files if f.name in CONFIG_FILES]
 
-    # Top-level structure.
     top_level: dict[str, list] = {}
     for f in all_files[:max_files]:
         rel   = f.relative_to(ws)
@@ -768,7 +860,7 @@ _HANDLERS: dict = {
 }
 
 
-def execute_tool(name: str, arguments: dict | str) -> str:
+def execute_tool(name: str, arguments: dict | str) -> str | dict:
     if isinstance(arguments, str):
         try:
             arguments = json.loads(arguments)
@@ -779,6 +871,13 @@ def execute_tool(name: str, arguments: dict | str) -> str:
         return f"Unknown tool: {name}"
     try:
         return handler(arguments)
+    except ToolApprovalRequired as exc:
+        return json.dumps({
+            "status": "approval_required",
+            "tool_name": exc.tool_name,
+            "arguments": exc.arguments,
+            "preview": exc.preview,
+        })
     except KeyError as e:
         return f"Missing required argument: {e}"
     except Exception as e:
