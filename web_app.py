@@ -1571,14 +1571,14 @@ class Handler(BaseHTTPRequestHandler):
                 clear_approval_state()
                 _send_json(self, _client_state())
                 return
-                if path == "/api/approval/approve":
-                    approve_pending(bool(data.get("always_allow_for_session")))
-                    _send_json(self, get_approval_state())
-                    return
-                if path == "/api/approval/reject":
-                    reject_pending(data.get("reason", ""))
-                    _send_json(self, get_approval_state())
-                    return
+            if path == "/api/approval/approve":
+                approve_pending(bool(data.get("always_allow_for_session")))
+                _send_json(self, get_approval_state())
+                return
+            if path == "/api/approval/reject":
+                reject_pending(data.get("reason", ""))
+                _send_json(self, get_approval_state())
+                return
             _send_json(self, {"error": "Not found"}, 404)
         except Exception as exc:
             _send_json(self, {"error": str(exc)}, 500)
