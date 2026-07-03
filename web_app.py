@@ -24,8 +24,56 @@ from agent_runtime import LangChainRuntime, RuntimeSettings
 from config import DEFAULT_SYSTEM_PROMPT, MODE_CUSTOM, MODE_LOCAL
 from prompt_manager import get_prompt_manager
 from skills_manager import get_skills_manager
-from tools import TOOL_SCHEMAS, execute_tool, get_workspace, set_tavily_config, set_workspace, tool_scan_project
+from tools import (
+    TOOL_SCHEMAS, execute_tool, get_workspace, set_tavily_config, set_workspace,
+    tool_scan_project, get_approval_state, approve_pending, reject_pending, clear_approval_state,
+)
 
+APPROVAL_POLL_INTERVAL = float(os.getenv("AGENT_APPROVAL_POLL_INTERVAL", "1.0"))
+APPROVAL_TIMEOUT = int(os.getenv("AGENT_APPROVAL_TIMEOUT", "600"))
+
+
+def _is_approval_required(tool_output) -> dict | None:
+    if not isinstance(tool_output, str):
+        return None
+    try:
+        parsed = json.loads(tool_output)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if isinstance(parsed, dict) and parsed.get("status") == "approval_required":
+        return parsed
+    return None
+
+
+def _execute_tool_with_approval(name: str, args: dict, write_event=None) -> str:
+    output = execute_tool(name, args)
+    approval_info = _is_approval_required(output)
+    if not approval_info:
+        return output
+
+    if write_event:
+        write_event({
+            "type": "approval_required",
+            "name": approval_info.get("tool_name", name),
+            "args": approval_info.get("arguments", args),
+            "preview": approval_info.get("preview", ""),
+        })
+
+    waited = 0.0
+    while waited < APPROVAL_TIMEOUT:
+        time.sleep(APPROVAL_POLL_INTERVAL)
+        waited += APPROVAL_POLL_INTERVAL
+        state = get_approval_state()
+        if state.get("rejected"):
+            reason = state.get("rejection_reason") or "User rejected execution."
+            return f"Execution rejected: {reason}"
+        if state.get("approved") or state.get("always_allow"):
+            return execute_tool(name, args)
+        if not state.get("pending") and not state.get("approved"):
+            # Cleared/reset elsewhere (e.g. chat cleared) without explicit reject.
+            return f"Tool execution cancelled: {name}"
+
+    return f"Approval timed out after {APPROVAL_TIMEOUT}s for tool: {name}"
 
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)).resolve()
 STATIC_DIR = ROOT / "web_ui"
@@ -1143,7 +1191,7 @@ def _run_agent_loop(api_messages: list[dict]) -> tuple[str, str, list[dict]]:
             for index, tc in enumerate(result["tool_calls"]):
                 name = tc["name"]
                 args = tc["arguments"]
-                tool_output = execute_tool(name, args)
+                tool_output = _execute_tool_with_approval(name, args)
                 tools_done.append({"name": name, "args": args, "result": tool_output})
                 tool_message = {"role": "tool", "content": tool_output, "name": name}
                 if STATE["conn_mode"] == MODE_CUSTOM:
@@ -1258,7 +1306,7 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
                     name = tc["name"]
                     args = tc["arguments"]
                     write_event({"type": "tool_call", "name": name, "args": args})
-                    tool_output = execute_tool(name, args)
+                    tool_output = _execute_tool_with_approval(name, args, write_event)
                     tools_done.append({"name": name, "args": args, "result": tool_output})
                     write_event({"type": "tool_result", "name": name, "result": tool_output})
                     tool_message = {"role": "tool", "content": tool_output, "name": name}
@@ -1361,6 +1409,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        if path == "/api/approval":
+            _send_json(self, get_approval_state())
+            return
         if path == "/api/state":
             _send_json(self, _client_state())
             return
@@ -1517,8 +1568,17 @@ class Handler(BaseHTTPRequestHandler):
                 STATE["used_skills_log"].clear()
                 STATE["memory_summary"] = ""
                 STATE["memory_summarized_count"] = 0
+                clear_approval_state()
                 _send_json(self, _client_state())
                 return
+                if path == "/api/approval/approve":
+                    approve_pending(bool(data.get("always_allow_for_session")))
+                    _send_json(self, get_approval_state())
+                    return
+                if path == "/api/approval/reject":
+                    reject_pending(data.get("reason", ""))
+                    _send_json(self, get_approval_state())
+                    return
             _send_json(self, {"error": "Not found"}, 404)
         except Exception as exc:
             _send_json(self, {"error": str(exc)}, 500)
