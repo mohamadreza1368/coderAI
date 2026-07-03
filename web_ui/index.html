@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ollama Agentic Workspace</title>
-  <link rel="stylesheet" href="/styles.css?v=enterprise-ide-1">
+  <link rel="stylesheet" href="/styles.css?v=enterprise-ide-2">
 </head>
 <body>
   <div class="app-shell">
@@ -250,6 +250,37 @@
       <span>Agent workspace</span>
     </footer>
   </div>
+
+  <!-- Execution Approval Modal -->
+  <div id="approvalModal" class="approval-modal" style="display:none;">
+    <div class="approval-card">
+      <div class="approval-header">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;color:#f59e0b"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <strong>Execution Approval Required</strong>
+      </div>
+      <div class="approval-body">
+        <div class="approval-meta">
+          <span class="approval-label">Tool</span>
+          <code id="approvalToolName"></code>
+        </div>
+        <div class="approval-meta">
+          <span class="approval-label">Workspace</span>
+          <code id="approvalWorkspace"></code>
+        </div>
+        <div class="approval-label" style="margin-top:10px;">Command / Code preview</div>
+        <pre id="approvalPreview" class="approval-preview"></pre>
+        <label class="approval-always">
+          <input type="checkbox" id="approvalAlways">
+          Always allow for this session
+        </label>
+      </div>
+      <div class="approval-actions">
+        <button id="approvalReject" type="button" class="ghost">Reject</button>
+        <button id="approvalApprove" type="button" class="primary">Approve and run</button>
+      </div>
+    </div>
+  </div>
+
   <div id="loadingOverlay" class="loading-overlay">
     <div class="loader-card">
       <div class="spinner"></div>
@@ -257,6 +288,6 @@
       <span id="loadingText">Preparing...</span>
     </div>
   </div>
-  <script src="/app.js?v=enterprise-ide-1"></script>
+  <script src="/app.js?v=enterprise-ide-2"></script>
 </body>
 </html>
