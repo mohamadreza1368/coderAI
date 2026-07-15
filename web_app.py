@@ -250,29 +250,6 @@ def _repo_name_from_url(url: str) -> str:
     return name or "repository"
 
 
-def _hidden_subprocess_kwargs() -> dict:
-    if os.name != "nt":
-        return {}
-    kwargs: dict = {}
-    if hasattr(subprocess, "CREATE_NO_WINDOW"):
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    startupinfo = subprocess.STARTUPINFO()
-    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    startupinfo.wShowWindow = 0
-    kwargs["startupinfo"] = startupinfo
-    return kwargs
-
-
-def _run_hidden(*args, **kwargs) -> subprocess.CompletedProcess:
-    kwargs.update(_hidden_subprocess_kwargs())
-    return subprocess.run(*args, **kwargs)
-
-
-def _popen_hidden(*args, **kwargs) -> subprocess.Popen:
-    kwargs.update(_hidden_subprocess_kwargs())
-    return subprocess.Popen(*args, **kwargs)
-
-
 def _resolve_clone_destination(repo_url: str, destination: str = "") -> Path:
     base = get_workspace().resolve().parent
     raw = (destination or "").strip()
@@ -297,7 +274,7 @@ def _clone_repository(repo_url: str, destination: str = "") -> dict:
     target.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        result = _run_hidden(
+        result = subprocess.run(
             ["git", "clone", url, str(target)],
             cwd=str(target.parent),
             capture_output=True,
@@ -351,7 +328,7 @@ def _clone_repository_stream(repo_url: str, destination: str, write_event) -> No
     write_event({"type": "status", "message": f"$ {' '.join(command)}", "path": str(target)})
 
     try:
-        process = _popen_hidden(
+        process = subprocess.Popen(
             command,
             cwd=str(target.parent),
             stdout=subprocess.PIPE,
@@ -360,6 +337,7 @@ def _clone_repository_stream(repo_url: str, destination: str, write_event) -> No
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
         )
     except FileNotFoundError:
         write_event({"type": "error", "message": "Git is not installed or is not available on PATH."})
@@ -763,7 +741,7 @@ if ($folder -and $folder.Self -and $folder.Self.Path) {
 }
 """
     try:
-        result = _run_hidden(
+        result = subprocess.run(
             [
                 powershell,
                 "-NoProfile",
@@ -779,6 +757,7 @@ if ($folder -and $folder.Self -and $folder.Self.Path) {
             encoding="utf-8",
             errors="replace",
             timeout=300,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
         )
         selected = result.stdout.strip().splitlines()
         return selected[-1].strip() if selected else None
