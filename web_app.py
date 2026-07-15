@@ -46,13 +46,39 @@ def _is_approval_required(tool_output) -> dict | None:
     return None
 
 
+def _extract_git_commit_event(tool_output) -> dict | None:
+    if not isinstance(tool_output, str):
+        return None
+    for line in tool_output.splitlines():
+        if line.startswith("Git commit:"):
+            rest = line.split(":", 1)[1].strip()
+            if not rest:
+                return None
+            parts = rest.split(" ", 1)
+            return {
+                "type": "git_commit",
+                "hash": parts[0],
+                "message": parts[1] if len(parts) > 1 else "",
+            }
+    return None
+
+
 def _execute_tool_with_approval(name: str, args: dict, write_event=None) -> str:
     output = execute_tool(name, args)
     approval_info = _is_approval_required(output)
     if not approval_info:
+        commit_event = _extract_git_commit_event(output)
+        if write_event and commit_event:
+            write_event(commit_event)
         return output
 
     if write_event:
+        if approval_info.get("tool_name", name) == "write_file":
+            write_event({
+                "type": "git_diff_preview",
+                "path": approval_info.get("arguments", args).get("path", ""),
+                "diff": approval_info.get("preview", ""),
+            })
         write_event({
             "type": "approval_required",
             "name": approval_info.get("tool_name", name),
@@ -69,7 +95,11 @@ def _execute_tool_with_approval(name: str, args: dict, write_event=None) -> str:
             reason = state.get("rejection_reason") or "User rejected execution."
             return f"Execution rejected: {reason}"
         if state.get("approved") or state.get("always_allow"):
-            return execute_tool(name, args)
+            final_output = execute_tool(name, args)
+            commit_event = _extract_git_commit_event(final_output)
+            if write_event and commit_event:
+                write_event(commit_event)
+            return final_output
         if not state.get("pending") and not state.get("approved"):
             # Cleared/reset elsewhere (e.g. chat cleared) without explicit reject.
             return f"Tool execution cancelled: {name}"
@@ -141,16 +171,18 @@ AGENT_WORKFLOW_PROMPT = """
 ## Agent Workspace Workflow
 
 When the user asks for project work:
-1. Inspect the project first with `scan_project` or `list_files`.
-2. Read the relevant files before changing anything.
-3. Make the requested code changes with the available tools.
-4. Use `search_files`, `read_many_files`, `replace_in_file`, and `project_tree` when they make codebase work faster and more precise.
-5. If Tavily web tools are enabled, use `web_search` for current internet information and `extract_url` when the user gives a URL or asks for web-backed research. If they are not available, explain that Tavily must be enabled in Settings.
-6. Use `git_status` and `git_diff` to inspect changed files before summarizing project edits when the workspace is a Git repository.
-7. For large code changes, write/edit files with tools instead of printing entire files in chat.
-8. In the final answer, clearly report:
+1. Plan: inspect the project first with `scan_project`, `project_tree`, `git_status`, or `list_files`.
+2. Act: read the relevant files before changing anything, then apply requested edits with tools.
+3. Observe: after edits, use `git_status` and `git_diff` to inspect the exact changed files when the workspace is a Git repository.
+4. Reflect: verify whether the requested change is complete before giving the final answer.
+5. Use `search_files`, `read_many_files`, `replace_in_file`, and `project_tree` when they make codebase work faster and more precise.
+6. If Tavily web tools are enabled, use `web_search` for current internet information and `extract_url` when the user gives a URL or asks for web-backed research. If they are not available, explain that Tavily must be enabled in Settings.
+7. `write_file` is approval-aware: it previews a Git diff to the UI, waits for user approval when approval mode is active, writes the file, then creates a Git commit for that file.
+8. For large code changes, write/edit files with tools instead of printing entire files in chat.
+9. In the final answer, clearly report:
    - what changed
    - which files were changed
+   - commit hash/message when a tool-created commit was made
    - any command/test result you ran
 If you did not change files, say that explicitly.
 ---

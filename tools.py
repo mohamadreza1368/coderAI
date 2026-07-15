@@ -9,6 +9,7 @@ import os
 import subprocess
 import json
 import re
+import difflib
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -102,6 +103,16 @@ def _request_approval(tool_name: str, arguments: dict, preview: str) -> None:
     _approval_state["rejected"] = False
     _approval_state["rejection_reason"] = ""
     raise ToolApprovalRequired(tool_name, arguments, preview)
+
+
+def _consume_tool_approval(tool_name: str) -> bool:
+    if _approval_state["always_allow"]:
+        return True
+    if _approval_state["approved"] and _approval_state["tool_name"] == tool_name:
+        _approval_state["approved"] = False
+        _approval_state["tool_name"] = ""
+        return True
+    return False
 
 
 def set_workspace(path: str | Path) -> tuple[bool, str]:
@@ -541,6 +552,66 @@ def _is_git_repo() -> bool:
     return not _run_git(["rev-parse", "--is-inside-work-tree"], timeout=5, max_chars=100).lower().startswith(("fatal", "git exited", "git is not"))
 
 
+class GitManager:
+    """Small Git integration layer used by write tools."""
+
+    @staticmethod
+    def is_repo() -> bool:
+        return _is_git_repo()
+
+    @staticmethod
+    def diff_preview(path: str, new_content: str, max_chars: int = 20_000) -> str:
+        try:
+            target = _safe_path(path)
+            old_text = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
+            old_lines = old_text.splitlines()
+            new_lines = str(new_content or "").splitlines()
+            diff = "\n".join(difflib.unified_diff(
+                old_lines,
+                new_lines,
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
+                lineterm="",
+            ))
+            if not diff:
+                return f"No content changes for {path}."
+            if len(diff) > max_chars:
+                return diff[:max_chars] + "\n... [diff truncated]"
+            return diff
+        except Exception as exc:
+            return f"Could not build diff preview for {path}: {exc}"
+
+    @staticmethod
+    def commit(path: str, message: str | None = None) -> dict:
+        if not GitManager.is_repo():
+            return {"ok": False, "skipped": True, "message": "Git commit skipped: workspace is not a Git repository."}
+
+        try:
+            safe = _safe_path(path)
+            rel = str(safe.relative_to(get_workspace().resolve()))
+        except Exception as exc:
+            return {"ok": False, "skipped": False, "message": f"Git commit failed: {exc}"}
+
+        add_output = _run_git(["add", "--", rel], timeout=10, max_chars=4000)
+        if add_output.lower().startswith(("fatal", "git exited", "git error", "git command timed out")):
+            return {"ok": False, "skipped": False, "message": f"Git add failed: {add_output}"}
+
+        status = _run_git(["diff", "--cached", "--quiet", "--", rel], timeout=10, max_chars=1000)
+        if status and not status.startswith("(empty output)"):
+            # `git diff --quiet` exits 1 when there are changes; _run_git returns an empty-ish message only on 0.
+            pass
+
+        commit_message = message or f"Agent: update {rel}"
+        commit_output = _run_git(["commit", "-m", commit_message, "--", rel], timeout=30, max_chars=8000)
+        if "nothing to commit" in commit_output.lower():
+            return {"ok": False, "skipped": True, "message": "Git commit skipped: nothing to commit."}
+        if commit_output.lower().startswith(("fatal", "git exited", "git error", "git command timed out")):
+            return {"ok": False, "skipped": False, "message": f"Git commit failed: {commit_output}"}
+
+        commit_hash = _run_git(["rev-parse", "--short", "HEAD"], timeout=10, max_chars=200).strip()
+        return {"ok": True, "skipped": False, "hash": commit_hash, "message": commit_message, "output": commit_output}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ── Tool Handlers
 # ══════════════════════════════════════════════════════════════════════════════
@@ -560,10 +631,20 @@ def tool_read_file(path: str) -> str:
 
 def tool_write_file(path: str, content: str) -> str:
     try:
+        if not _consume_tool_approval("write_file"):
+            preview = GitManager.diff_preview(path, content)
+            _request_approval("write_file", {"path": path, "content": content}, preview)
+
         p = _safe_path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
-        return f"File written: {path} ({p.stat().st_size:,} bytes)"
+        lines = [f"File written: {path} ({p.stat().st_size:,} bytes)"]
+        commit = GitManager.commit(path)
+        if commit.get("ok"):
+            lines.append(f"Git commit: {commit.get('hash')} {commit.get('message')}")
+        else:
+            lines.append(commit.get("message", "Git commit was not created."))
+        return "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
 
@@ -599,12 +680,8 @@ def tool_list_files(pattern: str = "**/*") -> str:
 
 
 def tool_run_bash(command: str) -> str:
-    if not _approval_state["always_allow"]:
-        if not _approval_state["approved"] or _approval_state["tool_name"] != "run_bash":
-            _request_approval("run_bash", {"command": command}, command)
-        # Clear approval flag after consuming it
-        _approval_state["approved"] = False
-        _approval_state["tool_name"] = ""
+    if not _consume_tool_approval("run_bash"):
+        _request_approval("run_bash", {"command": command}, command)
     if _approval_state.get("rejected"):
         reason = _approval_state.get("rejection_reason") or "User rejected execution."
         _approval_state["rejected"] = False
@@ -629,12 +706,8 @@ def tool_run_bash(command: str) -> str:
 
 
 def tool_run_python(code: str) -> str:
-    if not _approval_state["always_allow"]:
-        if not _approval_state["approved"] or _approval_state["tool_name"] != "run_python":
-            _request_approval("run_python", {"code": code}, code)
-        # Clear approval flag after consuming it
-        _approval_state["approved"] = False
-        _approval_state["tool_name"] = ""
+    if not _consume_tool_approval("run_python"):
+        _request_approval("run_python", {"code": code}, code)
     if _approval_state.get("rejected"):
         reason = _approval_state.get("rejection_reason") or "User rejected execution."
         _approval_state["rejected"] = False
