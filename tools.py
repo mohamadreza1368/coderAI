@@ -6,6 +6,7 @@ get_workspace() before reading or writing files.
 """
 
 import os
+import shutil
 import subprocess
 import json
 import re
@@ -44,6 +45,16 @@ def _hidden_subprocess_kwargs() -> dict:
 def _run_hidden(*args, **kwargs) -> subprocess.CompletedProcess:
     kwargs.update(_hidden_subprocess_kwargs())
     return subprocess.run(*args, **kwargs)
+
+
+def _git_executable() -> str:
+    git = shutil.which("git.exe") or shutil.which("git") or "git"
+    path = Path(git)
+    if os.name == "nt" and path.name.lower() == "git.exe" and path.parent.name.lower() == "cmd":
+        direct = path.parent.parent / "mingw64" / "bin" / "git.exe"
+        if direct.exists():
+            return str(direct)
+    return str(path) if path.exists() else git
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -541,7 +552,7 @@ def _tavily_post(endpoint: str, payload: dict) -> dict:
 def _run_git(args: list[str], timeout: int = 10, max_chars: int = MAX_OUTPUT_CHARS) -> str:
     try:
         result = _run_hidden(
-            ["git", *args],
+            [_git_executable(), *args],
             cwd=str(get_workspace()),
             capture_output=True,
             text=True,
