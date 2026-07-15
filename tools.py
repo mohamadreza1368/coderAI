@@ -28,6 +28,24 @@ _DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
 WORKSPACE_DIR: Path = _DEFAULT_WORKSPACE
 
 
+def _hidden_subprocess_kwargs() -> dict:
+    if os.name != "nt":
+        return {}
+    kwargs: dict = {}
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = 0
+    kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
+def _run_hidden(*args, **kwargs) -> subprocess.CompletedProcess:
+    kwargs.update(_hidden_subprocess_kwargs())
+    return subprocess.run(*args, **kwargs)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # ── Execution Approval State
 # ══════════════════════════════════════════════════════════════════════════════
@@ -522,7 +540,7 @@ def _tavily_post(endpoint: str, payload: dict) -> dict:
 
 def _run_git(args: list[str], timeout: int = 10, max_chars: int = MAX_OUTPUT_CHARS) -> str:
     try:
-        result = subprocess.run(
+        result = _run_hidden(
             ["git", *args],
             cwd=str(get_workspace()),
             capture_output=True,
@@ -687,7 +705,7 @@ def tool_run_bash(command: str) -> str:
         _approval_state["rejected"] = False
         return f"Execution rejected: {reason}"
     try:
-        result = subprocess.run(
+        result = _run_hidden(
             command, shell=True, cwd=str(get_workspace()),
             capture_output=True, text=True, timeout=EXEC_TIMEOUT,
         )
@@ -715,7 +733,7 @@ def tool_run_python(code: str) -> str:
     tmp = get_workspace() / "__tmp_agent__.py"
     try:
         tmp.write_text(code, encoding="utf-8")
-        result = subprocess.run(
+        result = _run_hidden(
             ["python3", str(tmp)], cwd=str(get_workspace()),
             capture_output=True, text=True, timeout=EXEC_TIMEOUT,
         )
