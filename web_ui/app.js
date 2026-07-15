@@ -277,6 +277,7 @@ function renderState(data) {
   renderFiles();
   renderSkills();
   renderPrompts();
+  renderGit(data.git);
   renderMessages();
   if (!renderGeneratedArtifactFromState()) {
     renderGeneratedCodeFromMessages();
@@ -391,6 +392,39 @@ function renderPrompts() {
   document.querySelectorAll(".prompt-item").forEach((btn) => {
     btn.addEventListener("click", async () => selectPrompt(btn.dataset.prompt));
   });
+}
+
+function renderGit(git = state.data?.git) {
+  const summary = $("gitSummary");
+  const changed = $("gitChanged");
+  const diff = $("gitDiff");
+  const log = $("gitLog");
+  if (!summary || !changed || !diff || !log) return;
+
+  if (!git?.is_repo) {
+    summary.textContent = "No Git repository detected";
+    changed.innerHTML = `<div class="empty-note">${escapeHtml(git?.status || "This workspace is not inside a Git repository.")}</div>`;
+    diff.textContent = "";
+    log.textContent = "";
+    if ($("gitBranch")) $("gitBranch").textContent = "no git";
+    return;
+  }
+
+  const branch = git.branch || "(detached)";
+  const count = (git.changed || []).length;
+  summary.textContent = `${branch}${git.upstream && git.upstream !== "(none)" ? ` · ${git.upstream}` : ""} · ${count} changed`;
+  if ($("gitBranch")) $("gitBranch").textContent = branch;
+  changed.innerHTML = count
+    ? git.changed.map((line) => `<div class="git-file"><span>${escapeHtml(line.slice(0, 2).trim() || "M")}</span>${escapeHtml(line.slice(3) || line)}</div>`).join("")
+    : `<div class="empty-note">Working tree clean</div>`;
+  diff.textContent = git.diff || "(no unstaged diff)";
+  log.textContent = git.log || "";
+}
+
+async function refreshGit() {
+  const git = await api("/api/git");
+  state.data = { ...(state.data || {}), git };
+  renderGit(git);
 }
 
 function renderMessages() {
@@ -842,7 +876,7 @@ async function sendPrompt(prompt) {
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
     activateTab(tab.dataset.tab);
-    setActiveActivity(tab.dataset.tab === "settings" ? "Settings" : "Explorer");
+    setActiveActivity(tab.dataset.tab === "settings" ? "Settings" : tab.dataset.tab === "git" ? "Source Control" : "Explorer");
   });
 });
 
@@ -856,6 +890,11 @@ document.querySelectorAll(".activity-btn").forEach((btn) => {
     } else if (label === "Search") {
       activateTab("files");
       $("fileSearch").focus();
+    } else if (label === "Source Control") {
+      activateTab("git");
+      refreshGit().catch((err) => {
+        $("gitSummary").textContent = err.message || "Git refresh failed";
+      });
     } else if (label === "Agent") {
       $("promptInput").focus();
     } else if (label === "Settings") {
@@ -871,6 +910,7 @@ $("browseWorkspace").addEventListener("click", browseWorkspace);
 $("saveSettings").addEventListener("click", saveSettings);
 $("compactMemory").addEventListener("click", compactMemory);
 $("testSkills").addEventListener("click", testSkills);
+$("refreshGit").addEventListener("click", refreshGit);
 $("tavilyEnabled").addEventListener("change", () => updateTavilyPanel());
 $("saveTopCustomApi").addEventListener("click", refreshModels);
 $("refreshModels").addEventListener("click", refreshModels);

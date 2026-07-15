@@ -58,6 +58,9 @@
         <button class="activity-btn" type="button" title="Search" aria-label="Search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
         </button>
+        <button class="activity-btn" type="button" title="Source Control" aria-label="Source Control">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="3"/><circle cx="18" cy="18" r="3"/><path d="M8.6 7.4 15.4 16.6"/><path d="M18 6a3 3 0 0 0-3 3v7.6"/></svg>
+        </button>
         <button class="activity-btn" type="button" title="Agent" aria-label="Agent">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="7" width="16" height="12" rx="2"/><path d="M12 7V3"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/></svg>
         </button>
@@ -100,6 +103,7 @@
           <button class="tab active" data-tab="files">Files</button>
           <button class="tab" data-tab="skills">Skills</button>
           <button class="tab" data-tab="prompts">Prompts</button>
+          <button class="tab" data-tab="git">Git</button>
           <button class="tab" data-tab="settings">Settings</button>
         </nav>
 
@@ -128,6 +132,27 @@
               <button id="savePrompt" type="button" class="primary">Use edited prompt</button>
             </div>
             <textarea id="systemPromptEditor" spellcheck="false"></textarea>
+          </div>
+        </section>
+
+        <section id="gitTab" class="tab-page git-panel">
+          <div class="tab-actions">
+            <button id="refreshGit" type="button" class="ghost">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.36"/><path d="M21 4v6h-6"/></svg>
+              Refresh
+            </button>
+            <span id="gitSummary">Git status loading...</span>
+          </div>
+          <div class="git-content">
+            <div id="gitChanged" class="git-changed"></div>
+            <details open>
+              <summary>Diff</summary>
+              <pre id="gitDiff" class="git-output"></pre>
+            </details>
+            <details>
+              <summary>Recent commits</summary>
+              <pre id="gitLog" class="git-output"></pre>
+            </details>
           </div>
         </section>
 
@@ -244,7 +269,7 @@
     </div>
 
     <footer class="statusbar">
-      <span>main</span>
+      <span id="gitBranch">main</span>
       <span>UTF-8</span>
       <span id="statusModel">Model ready</span>
       <span>Agent workspace</span>
