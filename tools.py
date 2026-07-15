@@ -410,44 +410,6 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "git_status",
-            "description": "Return the current Git branch and porcelain status for the active workspace.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "git_diff",
-            "description": "Return a Git diff for the active workspace. Use this before reporting changed files.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "Optional file path to diff", "default": ""},
-                    "staged": {"type": "boolean", "description": "Show staged diff when true", "default": False},
-                    "max_chars": {"type": "integer", "description": "Maximum output characters", "default": 8000},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "git_log",
-            "description": "Return recent Git commits for the active workspace.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "limit": {"type": "integer", "description": "Number of commits. Default: 8", "default": 8}
-                },
-                "required": [],
-            },
-        },
-    },
 ]
 
 
@@ -507,38 +469,6 @@ def _tavily_post(endpoint: str, payload: dict) -> dict:
         except Exception as exc:
             errors.append(str(exc))
     return {"error": "Tavily request failed. " + " | ".join(errors)}
-
-
-def _run_git(args: list[str], timeout: int = 10, max_chars: int = MAX_OUTPUT_CHARS) -> str:
-    try:
-        result = subprocess.run(
-            ["git", *args],
-            cwd=str(get_workspace()),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-    except FileNotFoundError:
-        return "Git is not installed or is not available on PATH."
-    except subprocess.TimeoutExpired:
-        return f"Git command timed out after {timeout}s."
-    except Exception as exc:
-        return f"Git error: {exc}"
-
-    stdout = (result.stdout or "").strip()
-    stderr = (result.stderr or "").strip()
-    output = "\n".join(part for part in (stdout, stderr) if part)
-    if result.returncode != 0:
-        return output or f"Git exited with code {result.returncode}."
-    if len(output) > max_chars:
-        return output[:max_chars] + "\n... [truncated]"
-    return output or "(empty output)"
-
-
-def _is_git_repo() -> bool:
-    return not _run_git(["rev-parse", "--is-inside-work-tree"], timeout=5, max_chars=100).lower().startswith(("fatal", "git exited", "git is not"))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -846,41 +776,6 @@ def tool_delete_file(path: str) -> str:
         return f"Error: {e}"
 
 
-def tool_git_status() -> str:
-    if not _is_git_repo():
-        return "The active workspace is not inside a Git repository."
-    branch = _run_git(["branch", "--show-current"], max_chars=200)
-    upstream = _run_git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], max_chars=200)
-    short = _run_git(["status", "--short", "--branch"], max_chars=MAX_OUTPUT_CHARS)
-    return "\n".join([
-        f"Branch: {branch or '(detached)'}",
-        f"Upstream: {upstream if not upstream.startswith('fatal') else '(none)'}",
-        "",
-        short,
-    ]).strip()
-
-
-def tool_git_diff(path: str = "", staged: bool = False, max_chars: int = MAX_OUTPUT_CHARS) -> str:
-    if not _is_git_repo():
-        return "The active workspace is not inside a Git repository."
-    max_chars = max(500, min(int(max_chars or MAX_OUTPUT_CHARS), 30_000))
-    args = ["diff"]
-    if staged:
-        args.append("--staged")
-    if path:
-        safe = _safe_path(path)
-        rel = safe.relative_to(get_workspace().resolve())
-        args += ["--", str(rel)]
-    return _run_git(args, max_chars=max_chars)
-
-
-def tool_git_log(limit: int = 8) -> str:
-    if not _is_git_repo():
-        return "The active workspace is not inside a Git repository."
-    limit = max(1, min(int(limit or 8), 30))
-    return _run_git(["log", f"-{limit}", "--oneline", "--decorate"], max_chars=MAX_OUTPUT_CHARS)
-
-
 def tool_scan_project(max_files: int = 200) -> str:
     """Build an initial project structure report."""
     ws = get_workspace()
@@ -962,9 +857,6 @@ _HANDLERS: dict = {
     "current_time": lambda a: tool_current_time(),
     "delete_file":  lambda a: tool_delete_file(a["path"]),
     "scan_project": lambda a: tool_scan_project(a.get("max_files", 200)),
-    "git_status":   lambda a: tool_git_status(),
-    "git_diff":     lambda a: tool_git_diff(a.get("path", ""), a.get("staged", False), a.get("max_chars", MAX_OUTPUT_CHARS)),
-    "git_log":      lambda a: tool_git_log(a.get("limit", 8)),
 }
 
 

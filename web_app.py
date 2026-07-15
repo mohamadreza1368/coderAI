@@ -27,7 +27,6 @@ from skills_manager import get_skills_manager
 from tools import (
     TOOL_SCHEMAS, execute_tool, get_workspace, set_tavily_config, set_workspace,
     tool_scan_project, get_approval_state, approve_pending, reject_pending, clear_approval_state,
-    tool_git_status, tool_git_diff, tool_git_log,
 )
 
 APPROVAL_POLL_INTERVAL = float(os.getenv("AGENT_APPROVAL_POLL_INTERVAL", "1.0"))
@@ -146,9 +145,8 @@ When the user asks for project work:
 3. Make the requested code changes with the available tools.
 4. Use `search_files`, `read_many_files`, `replace_in_file`, and `project_tree` when they make codebase work faster and more precise.
 5. If Tavily web tools are enabled, use `web_search` for current internet information and `extract_url` when the user gives a URL or asks for web-backed research. If they are not available, explain that Tavily must be enabled in Settings.
-6. Use `git_status` and `git_diff` to inspect changed files before summarizing project edits when the workspace is a Git repository.
-7. For large code changes, write/edit files with tools instead of printing entire files in chat.
-8. In the final answer, clearly report:
+6. For large code changes, write/edit files with tools instead of printing entire files in chat.
+7. In the final answer, clearly report:
    - what changed
    - which files were changed
    - any command/test result you ran
@@ -177,33 +175,6 @@ def _active_tool_schemas() -> list[dict]:
 
 def _sync_tool_settings() -> None:
     set_tavily_config(bool(STATE.get("tavily_enabled")), STATE.get("tavily_api_key", ""))
-
-
-def _git_payload(max_diff_chars: int = 8000) -> dict:
-    status = tool_git_status()
-    is_repo = "not inside a Git repository" not in status and "Git is not installed" not in status
-    diff = tool_git_diff(max_chars=max_diff_chars) if is_repo else ""
-    log = tool_git_log(8) if is_repo else ""
-    branch = ""
-    upstream = ""
-    for line in status.splitlines():
-        if line.startswith("Branch:"):
-            branch = line.split(":", 1)[1].strip()
-        elif line.startswith("Upstream:"):
-            upstream = line.split(":", 1)[1].strip()
-    changed = [
-        line for line in status.splitlines()
-        if line and not line.startswith(("Branch:", "Upstream:", "##"))
-    ]
-    return {
-        "is_repo": is_repo,
-        "branch": branch,
-        "upstream": upstream,
-        "status": status,
-        "changed": changed,
-        "diff": diff,
-        "log": log,
-    }
 
 
 def _send_json(handler: BaseHTTPRequestHandler, data, status: int = 200) -> None:
@@ -1431,7 +1402,6 @@ def _client_state() -> dict:
         "context_usage": _context_usage_snapshot(),
         "prompts": _prompt_payload(),
         "models": models_payload,
-        "git": _git_payload(max_diff_chars=4000),
     }
 
 
@@ -1453,9 +1423,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/skills/diagnostics":
             _send_json(self, _skills_diagnostics())
-            return
-        if path == "/api/git":
-            _send_json(self, _git_payload(max_diff_chars=12000))
             return
         if path == "/api/prompt":
             name = parse_qs(parsed.query).get("name", [""])[0]

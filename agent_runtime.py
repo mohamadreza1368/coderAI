@@ -140,15 +140,11 @@ class LangChainRuntime:
                     })
                 messages.append(AIMessage(content=content, tool_calls=tool_calls))
             elif role == "tool":
-                tool_call_id = item.get("tool_call_id") or f"call_{index}"
-                message = ToolMessage(
+                messages.append(ToolMessage(
                     content=content,
                     name=item.get("name"),
-                    tool_call_id=tool_call_id,
-                )
-                if not hasattr(message, "tool_call_id"):
-                    object.__setattr__(message, "tool_call_id", tool_call_id)
-                messages.append(message)
+                    tool_call_id=item.get("tool_call_id") or f"call_{index}",
+                ))
             else:
                 messages.append(HumanMessage(content=content))
         return messages
