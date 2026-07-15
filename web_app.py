@@ -10,10 +10,12 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import queue
 import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import re
@@ -301,6 +303,106 @@ def _clone_repository(repo_url: str, destination: str = "") -> dict:
         "workspace": _workspace_snapshot(),
         "git": _git_payload(max_diff_chars=12000) if ok else {},
     }
+
+
+def _clone_repository_stream(repo_url: str, destination: str, write_event) -> None:
+    url = (repo_url or "").strip()
+    if not url:
+        write_event({"type": "error", "message": "Repository URL is required."})
+        return
+    if not (url.startswith(("https://", "http://", "ssh://", "git@"))):
+        write_event({"type": "error", "message": "Only http(s), ssh, or git@ repository URLs are supported."})
+        return
+
+    try:
+        target = _resolve_clone_destination(url, destination)
+        if target.exists() and any(target.iterdir()):
+            write_event({"type": "error", "message": f"Destination is not empty: {target}"})
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        write_event({"type": "error", "message": str(exc)})
+        return
+
+    command = ["git", "clone", "--progress", url, str(target)]
+    write_event({"type": "status", "message": f"$ {' '.join(command)}", "path": str(target)})
+
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=str(target.parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
+    except FileNotFoundError:
+        write_event({"type": "error", "message": "Git is not installed or is not available on PATH."})
+        return
+    except Exception as exc:
+        write_event({"type": "error", "message": str(exc)})
+        return
+
+    chunks: queue.Queue[str | None] = queue.Queue()
+
+    def read_output() -> None:
+        try:
+            while True:
+                chunk = process.stdout.read(1) if process.stdout else ""
+                if not chunk:
+                    break
+                chunks.put(chunk)
+        finally:
+            chunks.put(None)
+
+    threading.Thread(target=read_output, daemon=True).start()
+
+    line = ""
+    started_at = time.monotonic()
+    reader_done = False
+    while not reader_done:
+        try:
+            chunk = chunks.get(timeout=0.1)
+        except queue.Empty:
+            chunk = ""
+
+        if chunk is None:
+            reader_done = True
+        elif chunk:
+            if chunk in ("\n", "\r"):
+                if line.strip():
+                    write_event({"type": "output", "content": line.rstrip()})
+                line = ""
+            else:
+                line += chunk
+
+        if time.monotonic() - started_at > 300:
+            process.kill()
+            write_event({"type": "error", "message": "Git clone timed out after 300 seconds."})
+            return
+
+    if line.strip():
+        write_event({"type": "output", "content": line.rstrip()})
+
+    code = process.wait()
+    if code != 0:
+        write_event({"type": "error", "message": f"git clone exited with code {code}"})
+        return
+
+    ok, message = set_workspace(target)
+    if not ok:
+        write_event({"type": "error", "message": f"Clone finished, but workspace switch failed: {message}"})
+        return
+
+    write_event({
+        "type": "done",
+        "path": str(target),
+        "message": message,
+        "state": _client_state(),
+    })
 
 
 def _send_json(handler: BaseHTTPRequestHandler, data, status: int = 200) -> None:
@@ -602,6 +704,7 @@ def _read_file(rel_path: str) -> dict:
 def _browse_local_folder(initial_dir: str = "") -> str | None:
     """Open a native folder picker on the machine running this local web server."""
     start_dir = initial_dir if initial_dir and Path(initial_dir).exists() else str(Path.home())
+    tkinter_opened = False
     try:
         import tkinter as tk
         from tkinter import filedialog
@@ -609,16 +712,17 @@ def _browse_local_folder(initial_dir: str = "") -> str | None:
         root = tk.Tk()
         root.withdraw()
         root.attributes("-topmost", True)
+        tkinter_opened = True
         selected = filedialog.askdirectory(
             parent=root,
             initialdir=start_dir,
             title="Select project folder",
         )
         root.destroy()
-        if selected:
-            return selected
+        return selected or None
     except Exception:
-        pass
+        if tkinter_opened:
+            return None
 
     if os.name != "nt":
         return None
@@ -1676,6 +1780,18 @@ class Handler(BaseHTTPRequestHandler):
                     _send_json(self, {**result, "state": _client_state()})
                 else:
                     _send_json(self, result, 400)
+                return
+            if path == "/api/git/clone_stream":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "close")
+                self.end_headers()
+
+                def write_event(event: dict) -> None:
+                    _write_stream_event(self, event)
+
+                _clone_repository_stream(data.get("url", ""), data.get("destination", ""), write_event)
                 return
             if path == "/api/scan":
                 result = tool_scan_project(int(data.get("max_files", 200)))
