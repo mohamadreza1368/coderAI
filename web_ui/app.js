@@ -6,7 +6,6 @@ const state = {
   editorDirty: false,
   contextUsage: {},
   workspaceLocked: false,
-  folderPickerOpen: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -438,69 +437,17 @@ async function cloneRepository() {
   }
   setLoading(true, "Cloning repository...", true);
   $("gitCloneBtn").disabled = true;
-  const outputPanel = $("gitCloneOutputPanel");
-  const output = $("gitCloneOutput");
-  if (outputPanel) outputPanel.open = true;
-  if (output) output.textContent = "";
-  const appendCloneOutput = (line) => {
-    if (!output) return;
-    output.textContent += `${line}\n`;
-    output.scrollTop = output.scrollHeight;
-  };
   try {
-    const res = await fetch("/api/git/clone_stream", {
+    const result = await api("/api/git/clone", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url, destination }),
     });
-    if (!res.ok || !res.body) {
-      const fallback = await res.json().catch(() => ({ error: "Clone request failed" }));
-      throw new Error(fallback.error || "Clone request failed");
-    }
-
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let cloneDone = false;
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const event = JSON.parse(line);
-        if (event.type === "status") {
-          $("gitSummary").textContent = event.message || "Cloning...";
-          appendCloneOutput(event.message || "");
-        } else if (event.type === "output") {
-          appendCloneOutput(event.content || "");
-        } else if (event.type === "error") {
-          appendCloneOutput(`fatal: ${event.message || "Clone failed"}`);
-          throw new Error(event.message || "Clone failed");
-        } else if (event.type === "done") {
-          cloneDone = true;
-          $("gitCloneUrl").value = "";
-          $("gitClonePath").value = "";
-          renderState(event.state || await api("/api/state"));
-          activateTab("git");
-          setActiveActivity("Source Control");
-          $("gitSummary").textContent = `Cloned · ${event.path}`;
-          appendCloneOutput(event.message || `Cloned into ${event.path}`);
-        }
-      }
-    }
-    if (buffer.trim()) {
-      const event = JSON.parse(buffer.trim());
-      if (event.type === "error") throw new Error(event.message || "Clone failed");
-      if (event.type === "done") {
-        cloneDone = true;
-        renderState(event.state || await api("/api/state"));
-        $("gitSummary").textContent = `Cloned · ${event.path}`;
-      }
-    }
-    if (!cloneDone) throw new Error("Clone stream ended before completion");
+    $("gitCloneUrl").value = "";
+    $("gitClonePath").value = "";
+    renderState(result.state || await api("/api/state"));
+    activateTab("git");
+    setActiveActivity("Source Control");
+    $("gitSummary").textContent = `Cloned · ${result.path}`;
   } catch (err) {
     $("gitSummary").textContent = err.message || "Clone failed";
   } finally {
@@ -761,9 +708,6 @@ async function openWorkspace() {
 }
 
 async function browseWorkspace() {
-  if (state.folderPickerOpen) return;
-  state.folderPickerOpen = true;
-  $("browseWorkspace").disabled = true;
   setLoading(true, "Opening folder picker...");
   try {
     const data = await api("/api/browse", {
@@ -776,8 +720,6 @@ async function browseWorkspace() {
   } catch (err) {
     alert(err.message || "Could not open the folder picker");
   } finally {
-    state.folderPickerOpen = false;
-    $("browseWorkspace").disabled = false;
     setLoading(false);
   }
 }
