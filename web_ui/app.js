@@ -596,34 +596,6 @@ function appendToolStatus(name, text) {
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
-function showApprovalModal(event) {
-  $("approvalToolName").textContent = event.name || "tool";
-  $("approvalWorkspace").textContent = state.data?.workspace?.path || "";
-  $("approvalPreview").textContent = event.preview || JSON.stringify(event.args || {}, null, 2);
-  $("approvalAlways").checked = false;
-  $("approvalModal").style.display = "grid";
-}
-
-function hideApprovalModal() {
-  $("approvalModal").style.display = "none";
-}
-
-async function approveToolExecution() {
-  await api("/api/approval/approve", {
-    method: "POST",
-    body: JSON.stringify({ always_allow_for_session: $("approvalAlways").checked }),
-  });
-  hideApprovalModal();
-}
-
-async function rejectToolExecution() {
-  await api("/api/approval/reject", {
-    method: "POST",
-    body: JSON.stringify({ reason: "Rejected in UI" }),
-  });
-  hideApprovalModal();
-}
-
 function updateGeneratedCodeFromStreaming(text) {
   setGeneratedCodeFromText(text, "live stream", true);
 }
@@ -868,15 +840,6 @@ async function sendPrompt(prompt) {
           appendToolStatus(event.name, JSON.stringify(event.args || {}, null, 2));
         } else if (event.type === "tool_result") {
           appendToolStatus(`${event.name} result`, String(event.result || "").slice(0, 1200));
-        } else if (event.type === "git_diff_preview") {
-          appendToolStatus(`Git diff preview · ${event.path || ""}`, String(event.diff || "").slice(0, 5000));
-          refreshGit().catch(() => {});
-        } else if (event.type === "approval_required") {
-          setLoading(true, `Waiting for approval: ${event.name}...`);
-          showApprovalModal(event);
-        } else if (event.type === "git_commit") {
-          appendToolStatus("Git commit", `${event.hash || ""} ${event.message || ""}`.trim());
-          refreshGit().catch(() => {});
         } else if (event.type === "error") {
           showStreamNotice(event.message || "Error");
         } else if (event.type === "done") {
@@ -948,8 +911,6 @@ $("saveSettings").addEventListener("click", saveSettings);
 $("compactMemory").addEventListener("click", compactMemory);
 $("testSkills").addEventListener("click", testSkills);
 $("refreshGit").addEventListener("click", refreshGit);
-$("approvalApprove").addEventListener("click", approveToolExecution);
-$("approvalReject").addEventListener("click", rejectToolExecution);
 $("tavilyEnabled").addEventListener("change", () => updateTavilyPanel());
 $("saveTopCustomApi").addEventListener("click", refreshModels);
 $("refreshModels").addEventListener("click", refreshModels);
