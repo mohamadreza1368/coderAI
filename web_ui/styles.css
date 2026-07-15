@@ -439,17 +439,7 @@ p, .editor-head span { color: var(--muted); font-size: 11px; }
   background: var(--panel-3);
 }
 
-.git-panel.active { display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
-.git-clone {
-  display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(0, .8fr) auto;
-  gap: 6px;
-  padding: 8px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-}
-.git-clone input { height: 32px; min-width: 0; }
-.git-clone button { height: 32px; padding: 0 10px; }
+.git-panel.active { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .git-content { min-height: 0; overflow: auto; padding: 8px; display: grid; align-content: start; gap: 8px; }
 .git-changed { display: grid; gap: 4px; }
 .git-file {
