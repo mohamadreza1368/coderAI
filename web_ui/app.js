@@ -427,6 +427,35 @@ async function refreshGit() {
   renderGit(git);
 }
 
+async function cloneRepository() {
+  const url = $("gitCloneUrl").value.trim();
+  const destination = $("gitClonePath").value.trim();
+  if (!url) {
+    $("gitSummary").textContent = "Repository URL is required";
+    $("gitCloneUrl").focus();
+    return;
+  }
+  setLoading(true, "Cloning repository...", true);
+  $("gitCloneBtn").disabled = true;
+  try {
+    const result = await api("/api/git/clone", {
+      method: "POST",
+      body: JSON.stringify({ url, destination }),
+    });
+    $("gitCloneUrl").value = "";
+    $("gitClonePath").value = "";
+    renderState(result.state || await api("/api/state"));
+    activateTab("git");
+    setActiveActivity("Source Control");
+    $("gitSummary").textContent = `Cloned · ${result.path}`;
+  } catch (err) {
+    $("gitSummary").textContent = err.message || "Clone failed";
+  } finally {
+    $("gitCloneBtn").disabled = false;
+    setLoading(false);
+  }
+}
+
 function renderMessages() {
   const messages = state.data?.messages || [];
   const toolsLog = state.data?.tools_log || [];
@@ -948,6 +977,7 @@ $("saveSettings").addEventListener("click", saveSettings);
 $("compactMemory").addEventListener("click", compactMemory);
 $("testSkills").addEventListener("click", testSkills);
 $("refreshGit").addEventListener("click", refreshGit);
+$("gitCloneBtn").addEventListener("click", cloneRepository);
 $("approvalApprove").addEventListener("click", approveToolExecution);
 $("approvalReject").addEventListener("click", rejectToolExecution);
 $("tavilyEnabled").addEventListener("change", () => updateTavilyPanel());

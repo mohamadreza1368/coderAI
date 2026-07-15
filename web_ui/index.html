@@ -136,6 +136,14 @@
         </section>
 
         <section id="gitTab" class="tab-page git-panel">
+          <div class="git-clone">
+            <input id="gitCloneUrl" placeholder="Repository URL, e.g. https://github.com/user/repo.git">
+            <input id="gitClonePath" placeholder="Destination folder (optional)">
+            <button id="gitCloneBtn" type="button" class="primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              Clone
+            </button>
+          </div>
           <div class="tab-actions">
             <button id="refreshGit" type="button" class="ghost">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.36"/><path d="M21 4v6h-6"/></svg>

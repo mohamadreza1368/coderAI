@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -235,6 +236,70 @@ def _git_payload(max_diff_chars: int = 8000) -> dict:
         "changed": changed,
         "diff": diff,
         "log": log,
+    }
+
+
+def _repo_name_from_url(url: str) -> str:
+    cleaned = url.strip().rstrip("/")
+    name = cleaned.rsplit("/", 1)[-1] if cleaned else "repository"
+    if name.endswith(".git"):
+        name = name[:-4]
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip(".-")
+    return name or "repository"
+
+
+def _resolve_clone_destination(repo_url: str, destination: str = "") -> Path:
+    base = get_workspace().resolve().parent
+    raw = (destination or "").strip()
+    if not raw:
+        target = base / _repo_name_from_url(repo_url)
+    else:
+        candidate = Path(raw).expanduser()
+        target = candidate if candidate.is_absolute() else base / candidate
+    return target.resolve()
+
+
+def _clone_repository(repo_url: str, destination: str = "") -> dict:
+    url = (repo_url or "").strip()
+    if not url:
+        return {"ok": False, "error": "Repository URL is required."}
+    if not (url.startswith(("https://", "http://", "ssh://", "git@"))):
+        return {"ok": False, "error": "Only http(s), ssh, or git@ repository URLs are supported."}
+
+    target = _resolve_clone_destination(url, destination)
+    if target.exists() and any(target.iterdir()):
+        return {"ok": False, "error": f"Destination is not empty: {target}"}
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        result = subprocess.run(
+            ["git", "clone", url, str(target)],
+            cwd=str(target.parent),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+        )
+    except FileNotFoundError:
+        return {"ok": False, "error": "Git is not installed or is not available on PATH."}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Git clone timed out after 300 seconds."}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+    output = "\n".join(part for part in ((result.stdout or "").strip(), (result.stderr or "").strip()) if part)
+    if result.returncode != 0:
+        return {"ok": False, "error": output or f"git clone exited with code {result.returncode}"}
+
+    ok, message = set_workspace(target)
+    return {
+        "ok": ok,
+        "path": str(target),
+        "message": message if ok else f"Clone finished, but workspace switch failed: {message}",
+        "output": output,
+        "workspace": _workspace_snapshot(),
+        "git": _git_payload(max_diff_chars=12000) if ok else {},
     }
 
 
@@ -1604,6 +1669,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/memory/compact":
                 _compact_memory_if_needed()
                 _send_json(self, _client_state())
+                return
+            if path == "/api/git/clone":
+                result = _clone_repository(data.get("url", ""), data.get("destination", ""))
+                if result.get("ok"):
+                    _send_json(self, {**result, "state": _client_state()})
+                else:
+                    _send_json(self, result, 400)
                 return
             if path == "/api/scan":
                 result = tool_scan_project(int(data.get("max_files", 200)))
