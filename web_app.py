@@ -273,16 +273,6 @@ def _popen_hidden(*args, **kwargs) -> subprocess.Popen:
     return subprocess.Popen(*args, **kwargs)
 
 
-def _git_executable() -> str:
-    git = shutil.which("git.exe") or shutil.which("git") or "git"
-    path = Path(git)
-    if os.name == "nt" and path.name.lower() == "git.exe" and path.parent.name.lower() == "cmd":
-        direct = path.parent.parent / "mingw64" / "bin" / "git.exe"
-        if direct.exists():
-            return str(direct)
-    return str(path) if path.exists() else git
-
-
 def _resolve_clone_destination(repo_url: str, destination: str = "") -> Path:
     base = get_workspace().resolve().parent
     raw = (destination or "").strip()
@@ -308,7 +298,7 @@ def _clone_repository(repo_url: str, destination: str = "") -> dict:
 
     try:
         result = _run_hidden(
-            [_git_executable(), "clone", url, str(target)],
+            ["git", "clone", url, str(target)],
             cwd=str(target.parent),
             capture_output=True,
             text=True,
@@ -357,8 +347,8 @@ def _clone_repository_stream(repo_url: str, destination: str, write_event) -> No
         write_event({"type": "error", "message": str(exc)})
         return
 
-    command = [_git_executable(), "clone", "--progress", url, str(target)]
-    write_event({"type": "status", "message": f"$ git clone --progress {url} {target}", "path": str(target)})
+    command = ["git", "clone", "--progress", url, str(target)]
+    write_event({"type": "status", "message": f"$ {' '.join(command)}", "path": str(target)})
 
     try:
         process = _popen_hidden(
