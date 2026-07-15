@@ -25,18 +25,8 @@ def main() -> None:
     import web_app
 
     url = f"http://{web_app.HOST}:{web_app.PORT}/"
-    threading.Timer(1.2, lambda: _open_browser(url)).start()
+    threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     web_app.main()
-
-
-def _open_browser(url: str) -> None:
-    if os.name == "nt" and hasattr(os, "startfile"):
-        try:
-            os.startfile(url)  # type: ignore[attr-defined]
-            return
-        except OSError:
-            pass
-    webbrowser.open(url)
 
 
 if __name__ == "__main__":
