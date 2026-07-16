@@ -8,6 +8,8 @@ const state = {
   workspaceLocked: false,
   pendingApprovalType: null,
   pendingPush: null,
+  projectCards: [],
+  projectArchive: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -267,7 +269,11 @@ function renderState(data) {
   $("tavilyApiKey").value = "";
   updateTavilyPanel(data.settings);
   const memory = data.memory || {};
-  $("memoryStats").textContent = `Memory: ${memory.summarized_messages || 0} compacted · ${memory.summary_chars || 0} chars · ${memory.token_counter || "estimated"}`;
+  const persistentStats = memory.persistent?.stats || {};
+  $("memoryStats").textContent = `Memory: ${persistentStats.turns || 0} turns · ${persistentStats.facts || 0} facts · ${persistentStats.preferences || 0} preferences`;
+  $("memoryUsageIndicator").textContent = memory.persistent?.retrieval_count
+    ? `${memory.persistent.retrieval_count} memory fact(s) used`
+    : "";
   state.contextUsage = data.context_usage || {};
   updateTokenUsage();
   $("customApiUrl").value = data.settings.custom_api_url || "https://api.openai.com/v1";
@@ -280,12 +286,247 @@ function renderState(data) {
   renderFiles();
   renderSkills();
   renderPrompts();
+  renderMemory(data.memory?.persistent || {});
   renderGit(data.git || {});
   renderMessages();
   if (!renderGeneratedArtifactFromState()) {
     renderGeneratedCodeFromMessages();
   }
   if (state.workspaceLocked) setWorkspaceLocked(true);
+}
+
+function formatRelativeTime(timestamp) {
+  if (!timestamp) return "No activity";
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000 - Number(timestamp)));
+  if (seconds < 60) return "Just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+  return new Date(Number(timestamp) * 1000).toLocaleDateString();
+}
+
+function showWorkbench() {
+  document.querySelector(".layout").classList.remove("hidden");
+  $("projectsView").classList.remove("active");
+}
+
+async function showProjects() {
+  document.querySelector(".layout").classList.add("hidden");
+  $("projectsView").classList.add("active");
+  $("projectsIndex").classList.remove("hidden");
+  $("projectHome").classList.remove("active");
+  const payload = await api("/api/projects");
+  state.projectCards = payload.projects || [];
+  renderProjectCards();
+}
+
+function renderProjectCards() {
+  $("projectCards").innerHTML = state.projectCards.map((project) => {
+    const dirty = Number(project.git?.files?.length || 0);
+    const gitClass = dirty ? "git-dirty" : "git-clean";
+    const gitText = project.git?.is_repo ? `${dirty ? `${dirty} changes` : "Git clean"} · ${project.git.commits || 0} commits` : "Git disabled";
+    return `<button type="button" class="project-card" data-project-id="${Number(project.id)}">
+      <div class="project-card-head"><span class="project-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg></span><span class="project-card-title"><strong>${escapeHtml(project.name)}</strong><code>${escapeHtml(project.workspace_path)}</code></span></div>
+      <div class="project-card-badges"><span class="project-badge ${gitClass}">${escapeHtml(gitText)}</span><span class="project-badge ${project.agent_status === "running" ? "running" : ""}">${escapeHtml(project.agent_status)}</span></div>
+      <div class="project-card-footer"><span>${project.sessions || 0} sessions · ${project.stats?.files || 0} files · ${formatSize(Number(project.stats?.kb || 0) * 1024)}</span><span>${formatRelativeTime(project.last_session_at || project.last_opened_at)}</span></div>
+    </button>`;
+  }).join("") || `<div class="memory-item-source">No projects yet. Use + New to add a workspace.</div>`;
+  document.querySelectorAll(".project-card").forEach((button) => button.addEventListener("click", () => openProjectHome(Number(button.dataset.projectId))));
+}
+
+async function openProjectHome(projectId) {
+  const archive = await api("/api/memory/archive", { method: "POST", body: JSON.stringify({ project_id: projectId }) });
+  const card = state.projectCards.find((item) => Number(item.id) === projectId) || archive.project || {};
+  state.projectArchive = { ...archive, card };
+  $("projectsIndex").classList.add("hidden");
+  $("projectHome").classList.add("active");
+  $("projectHomeName").textContent = card.name || "Project";
+  $("projectHomePath").textContent = card.workspace_path || "";
+  $("projectSettingsPath").textContent = card.workspace_path || "";
+  $("projectSettingsGit").textContent = card.git?.is_repo ? `${card.git.branch || "Git"} · ${card.git.files?.length || 0} changes` : "Disabled";
+  renderProjectHome();
+  activateProjectTab("overview");
+}
+
+function renderProjectHome() {
+  const { card, sessions = [], files = [], facts = [], preferences = {} } = state.projectArchive || {};
+  const dirty = Number(card?.git?.files?.length || 0);
+  $("projectQuickStats").innerHTML = [
+    [card?.stats?.files || 0, "Files"], [formatSize(Number(card?.stats?.kb || 0) * 1024), "Workspace size"],
+    [sessions.length, "Sessions"], [facts.length, "Saved facts"],
+  ].map(([value, label]) => `<div class="quick-stat"><strong>${escapeHtml(value)}</strong><span>${label}</span></div>`).join("");
+  const recent = sessions.slice(0, 5).map((session) => `<div class="activity-row"><i class="activity-dot"></i><div><strong>${escapeHtml(session.title)}</strong><span>${session.turns} turns · session</span></div><span>${formatRelativeTime(session.updated_at)}</span></div>`);
+  if (card?.git?.is_repo) recent.unshift(`<div class="activity-row"><i class="activity-dot"></i><div><strong>${dirty ? `${dirty} uncommitted changes` : "Working tree clean"}</strong><span>${escapeHtml(card.git.branch || "Git")}</span></div><span>${card.git.commits || 0} commits</span></div>`);
+  $("projectRecentActivity").innerHTML = recent.join("") || `<div class="memory-item-source">No recent activity.</div>`;
+  const pct = Number(state.contextUsage?.percent || 0);
+  $("projectContextFill").style.width = `${Math.min(100, pct)}%`;
+  $("projectContextText").textContent = `${pct}%`;
+  $("projectSessionList").innerHTML = sessions.map((session) => `<button type="button" class="project-session-row" data-session-id="${escapeHtml(session.id)}"><i class="activity-dot"></i><div><strong>${escapeHtml(session.title)}</strong><span>${session.turns} turns · ${escapeHtml(state.data?.settings?.model || "model")}</span></div><span>${formatRelativeTime(session.updated_at)}</span></button>`).join("") || `<div class="memory-item-source">No sessions for this project.</div>`;
+  $("projectFileGrid").innerHTML = files.map((file) => `<button type="button" class="project-file-row" data-path="${escapeHtml(file.path)}"><span>${escapeHtml(file.path)}</span><small>${formatSize(file.size)}</small></button>`).join("") || `<div class="memory-item-source">No files found.</div>`;
+  $("projectMemoryContent").innerHTML = `<section class="project-memory-group"><h2>Semantic Facts</h2><ul>${facts.map((fact) => `<li>${escapeHtml(fact.fact)}</li>`).join("") || "<li>No saved facts</li>"}</ul></section><section class="project-memory-group"><h2>Preferences</h2><ul>${Object.entries(preferences).map(([key, value]) => `<li><strong>${escapeHtml(key)}</strong>: ${escapeHtml(value)}</li>`).join("") || "<li>No saved preferences</li>"}</ul></section>`;
+  $("projectSkillsContent").innerHTML = (state.data?.skills || []).map((skill) => `<div class="project-skill"><strong>/${escapeHtml(skill.name)}</strong><span>${escapeHtml(skill.description || skill.category)}</span></div>`).join("");
+  document.querySelectorAll(".project-session-row").forEach((button) => button.addEventListener("click", () => resumeProjectSession(button.dataset.sessionId)));
+  document.querySelectorAll(".project-file-row").forEach((button) => button.addEventListener("click", async () => { await openProjectInEditor(false); await loadFile(button.dataset.path); }));
+}
+
+function activateProjectTab(name) {
+  document.querySelectorAll(".project-tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.projectTab === name));
+  document.querySelectorAll(".project-page").forEach((page) => page.classList.remove("active"));
+  $(`project${name[0].toUpperCase()}${name.slice(1)}Panel`)?.classList.add("active");
+}
+
+async function openProjectInEditor(startSession = false) {
+  const path = state.projectArchive?.card?.workspace_path;
+  if (!path) return;
+  const result = await api("/api/workspace", { method: "POST", body: JSON.stringify({ path }) });
+  if (!result.ok) throw new Error(result.message || "Could not open project");
+  renderState(await api("/api/state"));
+  if (startSession) renderState(await api("/api/clear", { method: "POST", body: JSON.stringify({}) }));
+  showWorkbench(); setActiveActivity("Agent"); $("promptInput").focus();
+}
+
+async function resumeProjectSession(sessionId) {
+  renderState(await api("/api/memory/session/resume", { method: "POST", body: JSON.stringify({ session_id: sessionId }) }));
+  showWorkbench(); setActiveActivity("Agent");
+}
+
+function renderMemory(memory) {
+  const stats = memory.stats || {};
+  $("persistentMemoryStats").textContent = `${stats.sessions || 0} sessions · ${stats.turns || 0} turns · ${stats.facts || 0} facts · ${stats.preferences || 0} preferences`;
+  renderMemoryProjects(memory.projects || []);
+  $("memoryFactsList").innerHTML = (memory.facts || []).map((item) => `
+    <article class="memory-item" data-memory-id="${Number(item.id)}">
+      <textarea class="memory-fact-input" spellcheck="false">${escapeHtml(item.fact)}</textarea>
+      <div class="memory-item-actions">
+        <button type="button" class="ghost memory-fact-save">Save</button>
+        <button type="button" class="ghost memory-fact-delete">Delete</button>
+      </div>
+      <span class="memory-item-source">${escapeHtml(item.source || "manual")}</span>
+    </article>
+  `).join("") || `<div class="memory-item-source">No project facts have been saved.</div>`;
+  $("memoryPreferencesList").innerHTML = Object.entries(memory.preferences || {}).map(([key, value]) => `
+    <article class="memory-item" data-preference-key="${encodeURIComponent(key)}">
+      <div><strong>${escapeHtml(key)}</strong><div class="memory-pref-value">${escapeHtml(value)}</div></div>
+      <div class="memory-item-actions"><button type="button" class="ghost memory-preference-delete">Delete</button></div>
+    </article>
+  `).join("") || `<div class="memory-item-source">No preferences have been saved.</div>`;
+
+  document.querySelectorAll(".memory-fact-save").forEach((button) => button.addEventListener("click", async () => {
+    const item = button.closest(".memory-item");
+    const id = Number(item.dataset.memoryId);
+    const existing = (state.data?.memory?.persistent?.facts || []).find((fact) => Number(fact.id) === id);
+    const memoryData = await api("/api/memory/fact", { method: "POST", body: JSON.stringify({ id, fact: item.querySelector("textarea").value, source: existing?.source || "manual" }) });
+    state.data.memory.persistent = memoryData;
+    renderMemory(memoryData);
+  }));
+  document.querySelectorAll(".memory-fact-delete").forEach((button) => button.addEventListener("click", async () => {
+    const id = Number(button.closest(".memory-item").dataset.memoryId);
+    const memoryData = await api("/api/memory/fact/delete", { method: "POST", body: JSON.stringify({ id }) });
+    state.data.memory.persistent = memoryData;
+    renderMemory(memoryData);
+  }));
+  document.querySelectorAll(".memory-preference-delete").forEach((button) => button.addEventListener("click", async () => {
+    const key = decodeURIComponent(button.closest(".memory-item").dataset.preferenceKey);
+    const memoryData = await api("/api/memory/preference/delete", { method: "POST", body: JSON.stringify({ key }) });
+    state.data.memory.persistent = memoryData;
+    renderMemory(memoryData);
+  }));
+}
+
+function renderMemoryProjects(projects) {
+  $("memoryProjectsList").innerHTML = projects.map((project) => `
+    <button type="button" class="archive-entry memory-project" data-project-id="${Number(project.id)}">
+      <strong>${escapeHtml(project.name)}</strong><span>${Number(project.sessions || 0)} sessions</span>
+      <small>${escapeHtml(project.workspace_path)}</small>
+    </button>
+  `).join("") || `<div class="memory-item-source">No archived projects.</div>`;
+  document.querySelectorAll(".memory-project").forEach((button) => button.addEventListener("click", async () => {
+    document.querySelectorAll(".memory-project").forEach((item) => item.classList.toggle("selected", item === button));
+    const archive = await api("/api/memory/archive", { method: "POST", body: JSON.stringify({ project_id: Number(button.dataset.projectId) }) });
+    state.memoryArchiveProjectId = Number(button.dataset.projectId);
+    renderMemorySessions(archive.sessions || []);
+    renderMemoryArchiveProject(archive);
+  }));
+}
+
+function renderMemoryArchiveProject(archive) {
+  const project = archive.project || {};
+  $("memoryArchiveProjectMeta").innerHTML = `<strong>${escapeHtml(project.name || "Unknown project")}</strong><span>${escapeHtml(project.workspace_path || "")}</span>`;
+  $("memoryArchiveFiles").innerHTML = (archive.files || []).map((file) => `
+    <button type="button" class="archive-file" data-path="${escapeHtml(file.path)}">
+      <span>${escapeHtml(file.path)}</span><small>${formatSize(file.size || 0)}</small>
+    </button>
+  `).join("") || `<div class="memory-item-source">No readable files found at the archived path.</div>`;
+  const facts = (archive.facts || []).map((item) => `<li>${escapeHtml(item.fact)}<small>${escapeHtml(item.source || "memory")}</small></li>`).join("");
+  const preferences = Object.entries(archive.preferences || {}).map(([key, value]) => `<li><strong>${escapeHtml(key)}</strong>: ${escapeHtml(value)}</li>`).join("");
+  $("memoryArchiveKnowledge").innerHTML = `
+    <h4>Semantic facts</h4><ul>${facts || "<li>No saved facts</li>"}</ul>
+    <h4>Preferences</h4><ul>${preferences || "<li>No saved preferences</li>"}</ul>
+  `;
+  document.querySelectorAll(".archive-file").forEach((button) => button.addEventListener("click", () => loadArchivedFile(button.dataset.path)));
+}
+
+async function loadArchivedFile(path) {
+  if (!state.memoryArchiveProjectId) return;
+  const data = await api("/api/memory/archive/file", {
+    method: "POST",
+    body: JSON.stringify({ project_id: state.memoryArchiveProjectId, path }),
+  });
+  setCodeEditorContent(
+    data.path,
+    `${data.ext} · archived project · ${formatSize(data.size)} · read-only preview`,
+    data.content,
+    data.ext || "txt"
+  );
+}
+
+function renderMemorySessions(sessions) {
+  $("memorySessionsList").innerHTML = sessions.map((session) => `
+    <button type="button" class="archive-entry memory-session" data-session-id="${escapeHtml(session.id)}">
+      <strong>${escapeHtml(session.title || "New session")}</strong><span>${Number(session.turns || 0)} turns</span>
+    </button>
+  `).join("") || `<div class="memory-item-source">No sessions in this project.</div>`;
+  $("memorySessionPreview").textContent = "Select a session to preview its conversation.";
+  $("resumeMemorySession").disabled = true;
+  document.querySelectorAll(".memory-session").forEach((button) => button.addEventListener("click", async () => {
+    document.querySelectorAll(".memory-session").forEach((item) => item.classList.toggle("selected", item === button));
+    const archive = await api("/api/memory/archive", { method: "POST", body: JSON.stringify({ session_id: button.dataset.sessionId }) });
+    const session = archive.session;
+    $("memorySessionPreview").innerHTML = (session?.turns || []).map((turn) => `<div><strong>${escapeHtml(turn.role)}</strong><p>${escapeHtml(turn.content)}</p></div>`).join("") || "This session is empty.";
+    $("resumeMemorySession").dataset.sessionId = button.dataset.sessionId;
+    $("resumeMemorySession").disabled = false;
+  }));
+}
+
+async function resumeMemorySession() {
+  const sessionId = $("resumeMemorySession").dataset.sessionId;
+  if (!sessionId) return;
+  renderState(await api("/api/memory/session/resume", { method: "POST", body: JSON.stringify({ session_id: sessionId }) }));
+}
+
+async function addMemoryFact() {
+  const fact = $("newMemoryFact").value.trim();
+  if (!fact) return;
+  const memory = await api("/api/memory/fact", { method: "POST", body: JSON.stringify({ fact, source: "manual" }) });
+  $("newMemoryFact").value = "";
+  state.data.memory.persistent = memory;
+  renderMemory(memory);
+}
+
+async function addMemoryPreference() {
+  const key = $("newPreferenceKey").value.trim();
+  const value = $("newPreferenceValue").value.trim();
+  if (!key || !value) return;
+  const memory = await api("/api/memory/preference", { method: "POST", body: JSON.stringify({ key, value }) });
+  $("newPreferenceKey").value = "";
+  $("newPreferenceValue").value = "";
+  state.data.memory.persistent = memory;
+  renderMemory(memory);
+}
+
+async function forgetProjectMemory() {
+  if (!window.confirm("Forget all conversations, project facts, and preferences stored for this workspace?")) return;
+  renderState(await api("/api/memory/forget", { method: "POST", body: JSON.stringify({ confirm: true }) }));
 }
 
 function renderGit(git) {
@@ -806,6 +1047,7 @@ function currentActiveContext() {
 
 async function refresh() {
   renderState(await api("/api/state"));
+  await showProjects();
 }
 
 async function openWorkspace() {
@@ -1018,6 +1260,8 @@ async function sendPrompt(prompt) {
           appendToolStatus("Git checkpoint", `${event.commit.slice(0, 8)} ${event.message}`);
         } else if (event.type === "git_checkpoint_created") {
           appendToolStatus("Session checkpoint", `Created branch ${event.branch}`);
+        } else if (event.type === "memory_used") {
+          $("memoryUsageIndicator").textContent = `${event.count} memory fact(s) used`;
         } else if (event.type === "error") {
           showStreamNotice(event.message || "Error");
         } else if (event.type === "done") {
@@ -1054,7 +1298,7 @@ async function sendPrompt(prompt) {
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
     activateTab(tab.dataset.tab);
-    setActiveActivity(tab.dataset.tab === "settings" ? "Settings" : "Explorer");
+    setActiveActivity(tab.dataset.tab === "settings" ? "Settings" : "Search");
   });
 });
 
@@ -1062,19 +1306,32 @@ document.querySelectorAll(".activity-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     const label = btn.getAttribute("aria-label");
     setActiveActivity(label);
-    if (label === "Explorer") {
-      activateTab("files");
-      $("fileSearch").focus();
+    if (label === "Projects") {
+      showProjects();
     } else if (label === "Search") {
+      showWorkbench();
       activateTab("files");
       $("fileSearch").focus();
     } else if (label === "Agent") {
+      showWorkbench();
       $("promptInput").focus();
     } else if (label === "Settings") {
+      showWorkbench();
       activateTab("settings");
+    } else if (label === "Memory") {
+      showWorkbench();
+      activateTab("memory");
     }
   });
 });
+
+document.querySelectorAll(".project-tab").forEach((tab) => tab.addEventListener("click", () => activateProjectTab(tab.dataset.projectTab)));
+$("backToProjects").addEventListener("click", () => { $("projectHome").classList.remove("active"); $("projectsIndex").classList.remove("hidden"); });
+$("openProjectInEditor").addEventListener("click", () => openProjectInEditor(false));
+$("startProjectSession").addEventListener("click", () => openProjectInEditor(true));
+$("newProjectSession").addEventListener("click", () => openProjectInEditor(true));
+$("newProject").addEventListener("click", async () => { showWorkbench(); setActiveActivity("Search"); await browseWorkspace(); });
+$("openRuntimeSettings").addEventListener("click", () => { showWorkbench(); setActiveActivity("Settings"); activateTab("settings"); });
 
 $("fileSearch").addEventListener("input", renderFiles);
 $("promptSearch").addEventListener("input", renderPrompts);
@@ -1082,6 +1339,10 @@ $("openWorkspace").addEventListener("click", openWorkspace);
 $("browseWorkspace").addEventListener("click", browseWorkspace);
 $("saveSettings").addEventListener("click", saveSettings);
 $("compactMemory").addEventListener("click", compactMemory);
+$("addMemoryFact").addEventListener("click", addMemoryFact);
+$("addMemoryPreference").addEventListener("click", addMemoryPreference);
+$("forgetProjectMemory").addEventListener("click", forgetProjectMemory);
+$("resumeMemorySession").addEventListener("click", resumeMemorySession);
 $("testSkills").addEventListener("click", testSkills);
 $("tavilyEnabled").addEventListener("change", () => updateTavilyPanel());
 $("saveTopCustomApi").addEventListener("click", refreshModels);

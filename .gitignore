@@ -50,3 +50,6 @@ agent_workspace/*
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Local application archive
+coderai_data/

@@ -1,6 +1,6 @@
 # Ollama Agentic Workspace
 
-Ollama Agentic Workspace is a local, browser-based coding agent UI for working with projects on your machine. It provides a three-pane workspace for browsing files, previewing or downloading generated code, and chatting with an agent that can inspect and edit the selected project through tool calls.
+Ollama Agentic Workspace is a local-first agentic coding environment for working with multiple projects on your machine. It provides a dedicated Projects dashboard, project and session archives, a three-pane coding workspace, Git-aware editing, and an agent that can inspect and modify the selected project through tool calls.
 
 The app is built as a small Python HTTP server with a custom HTML/CSS/JavaScript frontend.
 
@@ -19,6 +19,8 @@ The folder-based package may start faster and is usually better for future insta
 - Local Ollama model support with automatic model discovery.
 - OpenAI-compatible Custom API mode.
 - Project workspace browser with file preview.
+- Dedicated Projects dashboard with workspace cards, Git state, file statistics, session counts, recent activity, and agent status.
+- Project Home views with Overview, Sessions, Files, Memory, Skills, and Settings tabs.
 - Git-backed agent checkpoints with reviewable diffs, automatic scoped commits, history, and safe revert commits.
 - Remote Git connection with streamed cloning, system/SSH/PAT authentication, push previews, and explicit approval before publishing changes.
 - Native folder picker for selecting a local project directory.
@@ -31,6 +33,7 @@ The folder-based package may start faster and is usually better for future insta
 - Context window usage meter with token estimates and percentage warnings.
 - Download button for generated or selected code.
 - Context compaction and LiteLLM-based token counting when available.
+- Central persistent archive with project-scoped conversations, searchable semantic facts, and user preferences.
 
 ## Project Structure
 
@@ -41,6 +44,7 @@ The folder-based package may start faster and is usually better for future insta
 ├── launcher.py                 # EXE-friendly launcher that opens the browser
 ├── tools.py                    # Tool schemas and tool execution handlers
 ├── git_manager.py              # Git clone, diff, checkpoint, commit, push, and revert layer
+├── memory_manager.py           # SQLite episodic, semantic, and procedural memory
 ├── config.py                   # Runtime configuration and environment defaults
 ├── prompt_manager.py           # System prompt discovery and loading
 ├── skills_manager.py           # Skill discovery, selection, and usage parsing
@@ -129,13 +133,37 @@ Agent file changes are shown as a diff before they are written when approval mod
 
 Personal access tokens are used only for the active clone or push process. They are not stored in the remote URL, repository configuration, or application state.
 
+## Persistent Memory
+
+CoderAI keeps one central archive beside the application so every workspace and chat session is available from the Projects dashboard and Memory view:
+
+```text
+coderai_data/
+├── memory.db                   # SQLite conversations, facts, preferences, and session summaries
+├── vectors/                    # Reserved embedded vector-index storage
+└── facts.jsonl                 # Append-only semantic-memory audit log
+```
+
+Memory is separated into three layers:
+
+- Episodic memory stores chronological conversation turns and tool-call metadata between sessions.
+- Semantic memory stores durable project facts and retrieves up to five relevant items with SQLite FTS5/BM25.
+- Procedural memory stores small user preferences that are always included when memory is enabled.
+
+The agent never injects the entire database into the model context. It combines bounded recent turns, older session summaries, preferences, and only the project facts relevant to the current request. The chat stream reports how many facts were used.
+
+Open `Projects` from the left activity rail to browse workspace cards and enter a Project Home. Each Project Home provides separate tabs for overview statistics, resumable sessions, source files, persistent memory, skills, and settings. The standalone `Memory` view remains available for editing semantic facts and preferences. Project data stays isolated by workspace even though all projects share one central database. `Forget project` removes only the active project's conversations, facts, and preferences after explicit confirmation.
+
+In source mode, `coderai_data/` is created beside the application source. In packaged builds it is created beside the executable. Set `CODERAI_DATA_DIR` to store the archive elsewhere.
+
 ## TODO
 
-- Persist compacted conversation memory per workspace with configurable retention limits.
 - Add per-tool and per-workspace approval policies.
 - Add pull, fetch, branch switching, and merge-conflict assistance to Git History.
 - Improve incremental workspace indexing for large repositories.
 - Add richer skill validation, diagnostics, and execution traces.
+- Add optional local embedding providers and `sqlite-vec` retrieval for deeper semantic matching.
+- Add opt-in background fact extraction with review before facts become durable memory.
 - Add end-to-end browser tests for clone, diff approval, checkpoint, revert, and push flows.
 - Automate signed Windows release builds and GitHub Release publishing.
 

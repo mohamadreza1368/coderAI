@@ -52,7 +52,7 @@
 
     <div class="workbench">
       <nav class="activity-rail" aria-label="Primary navigation">
-        <button class="activity-btn active" type="button" title="Explorer" aria-label="Explorer">
+        <button class="activity-btn active" type="button" title="Projects" aria-label="Projects">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
         </button>
         <button class="activity-btn" type="button" title="Search" aria-label="Search">
@@ -63,6 +63,9 @@
         </button>
         <button class="activity-btn" type="button" title="Settings" aria-label="Settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+        </button>
+        <button class="activity-btn" type="button" title="Memory archive" aria-label="Memory">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
         </button>
       </nav>
 
@@ -131,6 +134,49 @@
           </div>
         </section>
 
+        <section id="memoryTab" class="tab-page memory-tab">
+          <div class="memory-toolbar">
+            <div id="persistentMemoryStats">No persistent memory yet</div>
+            <button id="forgetProjectMemory" type="button" class="danger-button">Forget project</button>
+          </div>
+          <div class="memory-scroll">
+            <section class="memory-section">
+              <div class="memory-section-head"><strong>Projects</strong><span>Local archive</span></div>
+              <div id="memoryProjectsList" class="memory-list archive-list project-archive-list"></div>
+              <div id="memoryArchiveProjectMeta" class="memory-project-meta">Select a project to inspect its history and files.</div>
+              <div class="memory-section-head"><strong>Sessions</strong><span>Conversation history</span></div>
+              <div id="memorySessionsList" class="memory-list archive-list"></div>
+              <div id="memorySessionPreview" class="memory-session-preview">Select a session to preview its conversation.</div>
+              <button id="resumeMemorySession" type="button" class="primary" disabled>Resume selected session</button>
+            </section>
+            <section class="memory-section">
+              <div class="memory-section-head"><strong>Project files</strong><span>Open in editor</span></div>
+              <div id="memoryArchiveFiles" class="memory-list archive-file-list"><div class="memory-item-source">Select a project to inspect its code.</div></div>
+            </section>
+            <section class="memory-section">
+              <div class="memory-section-head"><strong>Saved project memory</strong><span>Facts and preferences</span></div>
+              <div id="memoryArchiveKnowledge" class="memory-knowledge-preview"><div class="memory-item-source">Select a project to inspect its memory.</div></div>
+            </section>
+            <section class="memory-section">
+              <div class="memory-section-head"><strong>Project facts</strong><span>Retrieved by relevance</span></div>
+              <div class="memory-add-row">
+                <input id="newMemoryFact" placeholder="Add a durable project fact...">
+                <button id="addMemoryFact" type="button" class="primary">Add</button>
+              </div>
+              <div id="memoryFactsList" class="memory-list"></div>
+            </section>
+            <section class="memory-section">
+              <div class="memory-section-head"><strong>User preferences</strong><span>Always included</span></div>
+              <div class="memory-preference-row">
+                <input id="newPreferenceKey" placeholder="Preference name">
+                <input id="newPreferenceValue" placeholder="Preference value">
+                <button id="addMemoryPreference" type="button" class="primary">Add</button>
+              </div>
+              <div id="memoryPreferencesList" class="memory-list"></div>
+            </section>
+          </div>
+        </section>
+
         <section id="settingsTab" class="tab-page settings">
           <div class="settings-card">
             <span class="settings-card-title">
@@ -157,7 +203,7 @@
               <label>Context tokens <input id="contextTokenBudget" type="number" min="4000" max="200000" step="1000" value="24000"></label>
               <label>Response tokens <input id="responseTokenBudget" type="number" min="512" max="64000" step="512" value="8192"></label>
             </div>
-            <label><input id="memoryEnabled" type="checkbox"> Compact long chat memory</label>
+            <label><input id="memoryEnabled" type="checkbox"> Persistent workspace memory</label>
             <div class="memory-box">
               <span id="memoryStats">Memory: loading...</span>
               <button id="compactMemory" type="button" class="ghost">
@@ -256,6 +302,7 @@
               Agent
             </h1>
             <p>Explanations, tool calls, and reports</p>
+            <span id="memoryUsageIndicator" class="memory-indicator"></span>
           </div>
           <div id="tokenMeter" class="token-meter" title="Context window usage">
             <div class="token-meter-row">
@@ -278,6 +325,58 @@
         </form>
         </aside>
       </main>
+
+      <section id="projectsView" class="projects-view" aria-label="Projects">
+        <div id="projectsIndex" class="projects-index">
+          <header class="projects-header">
+            <div><h1>Projects</h1><p>Local workspaces, coding sessions, and project memory</p></div>
+            <button id="newProject" type="button" class="primary">+ New</button>
+          </header>
+          <div id="projectCards" class="project-grid"></div>
+        </div>
+
+        <div id="projectHome" class="project-home">
+          <header class="project-home-header">
+            <button id="backToProjects" type="button" class="ghost project-back">← Projects</button>
+            <div class="project-home-identity">
+              <h1 id="projectHomeName">Project</h1>
+              <code id="projectHomePath"></code>
+            </div>
+            <button id="openProjectInEditor" type="button" class="primary">Open in Editor</button>
+          </header>
+          <nav class="project-tabs" aria-label="Project sections">
+            <button class="project-tab active" data-project-tab="overview">Overview</button>
+            <button class="project-tab" data-project-tab="sessions">Sessions</button>
+            <button class="project-tab" data-project-tab="files">Files</button>
+            <button class="project-tab" data-project-tab="memory">Memory</button>
+            <button class="project-tab" data-project-tab="skills">Skills</button>
+            <button class="project-tab" data-project-tab="settings">Settings</button>
+          </nav>
+          <div class="project-home-content">
+            <section id="projectOverviewPanel" class="project-page active">
+              <div class="project-overview-grid">
+                <section class="project-block"><h2>Quick Stats</h2><div id="projectQuickStats" class="quick-stats"></div></section>
+                <section class="project-block"><h2>Recent Activity</h2><div id="projectRecentActivity" class="recent-activity"></div></section>
+              </div>
+              <div class="project-context"><span>Context</span><div class="token-bar"><span id="projectContextFill"></span></div><strong id="projectContextText">0%</strong></div>
+              <button id="startProjectSession" type="button" class="primary">Start new session</button>
+            </section>
+            <section id="projectSessionsPanel" class="project-page">
+              <div class="project-page-actions"><h2>Sessions</h2><button id="newProjectSession" type="button" class="primary">+ New Session</button></div>
+              <div id="projectSessionList" class="project-session-list"></div>
+            </section>
+            <section id="projectFilesPanel" class="project-page"><h2>Files</h2><div id="projectFileGrid" class="project-file-grid"></div></section>
+            <section id="projectMemoryPanel" class="project-page"><h2>Project Memory</h2><div id="projectMemoryContent" class="project-memory-content"></div></section>
+            <section id="projectSkillsPanel" class="project-page"><h2>Skills</h2><div id="projectSkillsContent" class="project-skills-content"></div></section>
+            <section id="projectSettingsPanel" class="project-page">
+              <h2>Project Settings</h2>
+              <div class="project-setting-row"><span>Workspace path</span><code id="projectSettingsPath"></code></div>
+              <div class="project-setting-row"><span>Git integration</span><strong id="projectSettingsGit">Disabled</strong></div>
+              <button id="openRuntimeSettings" type="button" class="ghost">Open model and runtime settings</button>
+            </section>
+          </div>
+        </div>
+      </section>
     </div>
 
     <footer class="statusbar">

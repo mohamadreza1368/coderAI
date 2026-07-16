@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -26,6 +27,7 @@ from config import DEFAULT_SYSTEM_PROMPT, MODE_CUSTOM, MODE_LOCAL
 from prompt_manager import get_prompt_manager
 from skills_manager import get_skills_manager
 from git_manager import GitManager, GitError
+from memory_manager import MemoryManager
 from tools import (
     TOOL_SCHEMAS, execute_tool, get_workspace, set_tavily_config, set_workspace,
     tool_scan_project, get_approval_state, approve_pending, reject_pending, clear_approval_state,
@@ -133,6 +135,10 @@ STATE = {
     "memory_enabled": True,
     "memory_summary": "",
     "memory_summarized_count": 0,
+    "memory_session_id": uuid.uuid4().hex,
+    "memory_retrieval_count": 0,
+    "memory_retrieved_facts": [],
+    "memory_context": "",
     "context_token_budget": DEFAULT_CONTEXT_TOKEN_BUDGET,
     "response_token_budget": DEFAULT_RESPONSE_TOKEN_BUDGET,
     "auto_continue": True,
@@ -202,6 +208,144 @@ def _git_snapshot() -> dict:
         return status
     except Exception as exc:
         return {"is_repo": False, "branch": None, "files": [], "history": [], "error": str(exc), "approval_mode": bool(STATE.get("git_approval_mode", True))}
+
+
+def _memory_manager() -> MemoryManager:
+    return MemoryManager(get_workspace())
+
+
+def _memory_payload() -> dict:
+    try:
+        manager = _memory_manager()
+        return {
+            "stats": manager.stats(),
+            "facts": manager.list_facts(),
+            "preferences": manager.get_user_preferences(),
+            "retrieval_count": int(STATE.get("memory_retrieval_count", 0)),
+            "retrieved_facts": STATE.get("memory_retrieved_facts", []),
+            "session_id": STATE.get("memory_session_id", ""),
+            "projects": _project_cards(manager),
+            "sessions": manager.list_sessions(),
+        }
+    except Exception as exc:
+        return {"stats": {}, "facts": [], "preferences": {}, "retrieval_count": 0, "retrieved_facts": [], "error": str(exc)}
+
+
+def _project_cards(manager: MemoryManager | None = None) -> list[dict]:
+    manager = manager or _memory_manager()
+    active_path = str(get_workspace().resolve())
+    cards = []
+    for project in manager.list_projects():
+        workspace = Path(project["workspace_path"])
+        snapshot = _workspace_snapshot_for(workspace) if workspace.is_dir() else {"files": [], "stats": {"files": 0, "kb": 0, "types": 0}}
+        git = {"is_repo": False, "files": [], "history": []}
+        if workspace.is_dir():
+            try:
+                git_manager = GitManager(workspace)
+                status = git_manager.get_status()
+                git = {
+                    "is_repo": bool(status.get("is_repo")),
+                    "branch": status.get("branch"),
+                    "files": status.get("files", []),
+                    "commits": len(git_manager.get_log(100)) if status.get("is_repo") else 0,
+                }
+            except Exception:
+                pass
+        cards.append({
+            **project,
+            "exists": workspace.is_dir(),
+            "stats": snapshot["stats"],
+            "git": git,
+            "agent_status": "running" if str(workspace.resolve()) == active_path and STATE.get("agent_running") else "idle",
+            "is_active": str(workspace.resolve()) == active_path if workspace.is_dir() else False,
+        })
+    return cards
+
+
+def _persistent_memory_context(query: str) -> str:
+    if not STATE.get("memory_enabled"):
+        STATE["memory_retrieval_count"] = 0
+        STATE["memory_retrieved_facts"] = []
+        STATE["memory_context"] = ""
+        return ""
+    try:
+        manager = _memory_manager()
+        preferences = manager.get_user_preferences()
+        facts = manager.retrieve_relevant(query, top_k=5)
+        summaries = manager.load_recent_summaries(STATE.get("memory_session_id", ""), limit=2)
+        STATE["memory_retrieval_count"] = len(facts)
+        STATE["memory_retrieved_facts"] = facts
+        sections = ["[Persistent workspace memory]"]
+        if preferences:
+            sections.append("User preferences:\n" + "\n".join(f"- {key}: {value}" for key, value in preferences.items()))
+        if facts:
+            sections.append("Relevant project facts:\n" + "\n".join(f"- {item['fact']} (source: {item['source'] or 'memory'})" for item in facts))
+        if summaries:
+            summary_text = "\n\n".join(item["summary"] for item in summaries)
+            sections.append("Older session summaries:\n" + _clip_for_context(summary_text, 3000))
+        if len(sections) == 1:
+            STATE["memory_context"] = ""
+            return ""
+        sections.append("Treat current workspace files and the current user request as more authoritative than memory.")
+        context = _clip_for_context("\n\n".join(sections), 6000)
+        STATE["memory_context"] = context
+        return context
+    except Exception:
+        STATE["memory_retrieval_count"] = 0
+        STATE["memory_retrieved_facts"] = []
+        STATE["memory_context"] = ""
+        return ""
+
+
+def _save_memory_turn(role: str, content: str, tool_calls: list | None = None) -> None:
+    if not STATE.get("memory_enabled"):
+        return
+    try:
+        _memory_manager().save_turn(STATE["memory_session_id"], role, content, tool_calls)
+    except Exception:
+        pass
+
+
+def _index_tool_memory(tools_done: list[dict]) -> None:
+    if not STATE.get("memory_enabled"):
+        return
+    labels = {
+        "write_file": "Agent created or updated {path}.",
+        "replace_in_file": "Agent modified existing code in {path}.",
+        "append_file": "Agent appended content to {path}.",
+        "delete_file": "Agent deleted {path}.",
+    }
+    try:
+        manager = _memory_manager()
+        for item in tools_done:
+            name = item.get("name")
+            path = str((item.get("args") or {}).get("path") or "").strip()
+            result = str(item.get("result") or "")
+            if name in labels and path and not result.lower().startswith(("error", "execution rejected", "no replacements")):
+                manager.index_fact(labels[name].format(path=path), source=path)
+    except Exception:
+        pass
+
+
+def _activate_workspace_memory(path: str | Path) -> tuple[bool, str]:
+    old_workspace = get_workspace()
+    try:
+        MemoryManager(old_workspace).summarize_old_session(STATE.get("memory_session_id", ""))
+    except Exception:
+        pass
+    ok, message = set_workspace(path)
+    if not ok:
+        return ok, message
+    STATE["memory_session_id"] = uuid.uuid4().hex
+    STATE["memory_summary"] = ""
+    STATE["memory_summarized_count"] = 0
+    STATE["memory_retrieval_count"] = 0
+    STATE["memory_retrieved_facts"] = []
+    STATE["memory_context"] = ""
+    STATE["messages"] = []
+    STATE["tools_log"] = []
+    STATE["used_skills_log"] = []
+    return True, message
 
 
 def _validate_git_remote(remote_url: str) -> str:
@@ -361,6 +505,8 @@ def _model_context_window(model: str) -> tuple[int, str]:
 
 def _context_usage_snapshot() -> dict:
     final_system = _build_final_system_prompt()
+    if STATE.get("memory_context"):
+        final_system += f"\n\n{STATE['memory_context']}"
     messages = _build_api_messages(final_system, compact=False)
     input_tokens = _fast_tokens_for_messages(messages)
     configured_budget = max(4_000, int(STATE.get("context_token_budget") or DEFAULT_CONTEXT_TOKEN_BUDGET))
@@ -516,7 +662,11 @@ def _build_api_messages(final_system: str, compact: bool = True) -> list[dict]:
 
 
 def _workspace_snapshot() -> dict:
-    ws = get_workspace()
+    return _workspace_snapshot_for(get_workspace())
+
+
+def _workspace_snapshot_for(workspace: str | Path) -> dict:
+    ws = Path(workspace).resolve()
     ignore = {".git", "__pycache__", "node_modules", ".venv", "venv", ".idea", ".vscode", "dist", "build", ".next"}
     files = []
     total_size = 0
@@ -542,13 +692,21 @@ def _workspace_snapshot() -> dict:
     }
 
 
-def _read_file(rel_path: str) -> dict:
-    ws = get_workspace()
+def _read_workspace_file(workspace: str | Path, rel_path: str) -> dict:
+    ws = Path(workspace).resolve()
     target = (ws / rel_path).resolve()
-    if not str(target).startswith(str(ws.resolve())):
-        raise PermissionError("Path outside workspace is not allowed")
+    try:
+        target.relative_to(ws)
+    except ValueError as exc:
+        raise PermissionError("Path outside workspace is not allowed") from exc
+    if not target.is_file():
+        raise FileNotFoundError("Archived project file no longer exists")
     text = target.read_text(encoding="utf-8", errors="replace")
     return {"path": rel_path, "content": text, "size": target.stat().st_size, "ext": target.suffix.lstrip(".") or "text"}
+
+
+def _read_file(rel_path: str) -> dict:
+    return _read_workspace_file(get_workspace(), rel_path)
 
 
 def _browse_local_folder(initial_dir: str = "") -> str | None:
@@ -1305,9 +1463,11 @@ def _run_agent(prompt: str, active_context: dict | None = None) -> dict:
         clean_prompt = prompt
 
     _sync_tool_settings()
+    memory_context = _persistent_memory_context(clean_prompt)
     model_prompt = f"{_build_workspace_context(active_context)}\n\n[User request]\n{clean_prompt}"
     STATE["messages"].append({"role": "user", "content": clean_prompt})
-    final_system = _build_final_system_prompt()
+    _save_memory_turn("user", clean_prompt)
+    final_system = _build_final_system_prompt() + (f"\n\n{memory_context}" if memory_context else "")
     api_messages = _build_api_messages(final_system)
     api_messages[-1] = {"role": "user", "content": model_prompt}
 
@@ -1322,6 +1482,8 @@ def _run_agent(prompt: str, active_context: dict | None = None) -> dict:
     clean_response = sm.strip_skill_tag(response_text)
     _update_generated_artifact(clean_response, active_context)
     STATE["messages"].append({"role": "assistant", "content": clean_response})
+    _save_memory_turn("assistant", clean_response, tools_done)
+    _index_tool_memory(tools_done)
     STATE["tools_log"].append(tools_done)
     STATE["used_skills_log"].append([s.name for s in used_skills])
     return {
@@ -1355,12 +1517,16 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
         _ensure_session_checkpoint(write_event)
     except Exception as exc:
         write_event({"type": "status", "message": f"Git checkpoint unavailable: {exc}"})
+    memory_context = _persistent_memory_context(clean_prompt)
     model_prompt = f"{_build_workspace_context(active_context)}\n\n[User request]\n{clean_prompt}"
     STATE["messages"].append({"role": "user", "content": clean_prompt})
+    _save_memory_turn("user", clean_prompt)
     write_event({"type": "state", "state": _client_state()})
+    if STATE.get("memory_retrieval_count"):
+        write_event({"type": "memory_used", "count": STATE["memory_retrieval_count"]})
     write_event({"type": "status", "message": "Preparing context..."})
 
-    final_system = _build_final_system_prompt()
+    final_system = _build_final_system_prompt() + (f"\n\n{memory_context}" if memory_context else "")
     history = _build_api_messages(final_system)
     history[-1] = {"role": "user", "content": model_prompt}
     response_text = ""
@@ -1427,6 +1593,8 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
     clean_response = sm.strip_skill_tag(response_text)
     _update_generated_artifact(clean_response, active_context)
     STATE["messages"].append({"role": "assistant", "content": clean_response})
+    _save_memory_turn("assistant", clean_response, tools_done)
+    _index_tool_memory(tools_done)
     STATE["tools_log"].append(tools_done)
     STATE["used_skills_log"].append([s.name for s in used_skills])
     write_event({
@@ -1478,6 +1646,7 @@ def _client_state() -> dict:
             "token_counter": "litellm" if _litellm_token_counter else "estimated",
             "token_counter_error": _litellm_import_error,
             "visible_messages": len(STATE["messages"]),
+            "persistent": _memory_payload(),
         },
         "runtime": {
             "langchain_available": lc_runtime.available,
@@ -1501,6 +1670,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/git":
             _send_json(self, _git_snapshot())
+            return
+        if path == "/api/memory":
+            _send_json(self, _memory_payload())
+            return
+        if path == "/api/projects":
+            _send_json(self, {"projects": _project_cards()})
             return
         if path == "/api/state":
             _send_json(self, _client_state())
@@ -1538,7 +1713,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/browse":
             picked = _browse_local_folder(str(get_workspace()))
             if picked:
-                set_workspace(picked)
+                _activate_workspace_memory(picked)
             body = (
                 "<!doctype html><meta charset='utf-8'>"
                 "<script>location.replace('/');</script>"
@@ -1572,7 +1747,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             data = _read_json(self)
             if path == "/api/workspace":
-                ok, msg = set_workspace(data.get("path", ""))
+                ok, msg = _activate_workspace_memory(data.get("path", ""))
                 _send_json(self, {"ok": ok, "message": msg, "workspace": _workspace_snapshot()}, 200 if ok else 400)
                 return
             if path == "/api/browse":
@@ -1580,7 +1755,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not picked:
                     _send_json(self, {"ok": False, "cancelled": True, "message": "Folder selection was cancelled"})
                     return
-                ok, msg = set_workspace(picked)
+                ok, msg = _activate_workspace_memory(picked)
                 _send_json(
                     self,
                     {"ok": ok, "message": msg, "workspace": _workspace_snapshot(), "path": picked},
@@ -1629,6 +1804,94 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/memory/compact":
                 _compact_memory_if_needed()
+                try:
+                    _memory_manager().summarize_old_session(STATE["memory_session_id"])
+                except Exception:
+                    pass
+                _send_json(self, _client_state())
+                return
+            if path == "/api/memory/archive":
+                manager = _memory_manager()
+                project_id = data.get("project_id")
+                session_id = str(data.get("session_id") or "")
+                project = manager.get_project(int(project_id)) if project_id else None
+                _send_json(self, {
+                    "projects": _project_cards(manager),
+                    "sessions": manager.list_sessions(int(project_id)) if project_id else [],
+                    "session": manager.load_session(session_id) if session_id else None,
+                    "project": project,
+                    "files": _workspace_snapshot_for(project["workspace_path"])["files"] if project and Path(project["workspace_path"]).is_dir() else [],
+                    "facts": manager.list_facts(project_id=int(project_id)) if project_id else [],
+                    "preferences": manager.get_user_preferences(int(project_id)) if project_id else {},
+                })
+                return
+            if path == "/api/memory/archive/file":
+                manager = _memory_manager()
+                project = manager.get_project(int(data.get("project_id")))
+                if not project:
+                    _send_json(self, {"error": "Archived project not found"}, 404)
+                    return
+                _send_json(self, _read_workspace_file(project["workspace_path"], str(data.get("path") or "")))
+                return
+            if path == "/api/memory/session/resume":
+                session_id = str(data.get("session_id") or "").strip()
+                session = _memory_manager().load_session(session_id)
+                if not session:
+                    _send_json(self, {"error": "Session not found"}, 404)
+                    return
+                ok, message = set_workspace(session["workspace_path"])
+                if not ok:
+                    _send_json(self, {"error": message}, 400)
+                    return
+                STATE["memory_session_id"] = session_id
+                STATE["messages"] = [
+                    {"role": turn["role"], "content": turn["content"]}
+                    for turn in session["turns"]
+                ]
+                STATE["tools_log"] = []
+                STATE["used_skills_log"] = []
+                STATE["memory_summary"] = session.get("summary", "")
+                STATE["memory_summarized_count"] = 0
+                STATE["memory_retrieval_count"] = 0
+                STATE["memory_retrieved_facts"] = []
+                STATE["memory_context"] = ""
+                _send_json(self, _client_state())
+                return
+            if path == "/api/memory/fact":
+                manager = _memory_manager()
+                fact_id = data.get("id")
+                if fact_id:
+                    manager.update_fact(int(fact_id), data.get("fact", ""), data.get("source", "manual"))
+                else:
+                    manager.index_fact(data.get("fact", ""), data.get("source", "manual"))
+                _send_json(self, _memory_payload())
+                return
+            if path == "/api/memory/fact/delete":
+                _memory_manager().delete_fact(int(data.get("id")))
+                _send_json(self, _memory_payload())
+                return
+            if path == "/api/memory/preference":
+                _memory_manager().update_preference(data.get("key", ""), data.get("value", ""))
+                _send_json(self, _memory_payload())
+                return
+            if path == "/api/memory/preference/delete":
+                _memory_manager().delete_preference(data.get("key", ""))
+                _send_json(self, _memory_payload())
+                return
+            if path == "/api/memory/forget":
+                if data.get("confirm") is not True:
+                    _send_json(self, {"error": "Explicit confirmation is required"}, 403)
+                    return
+                _memory_manager().forget_project()
+                STATE["messages"].clear()
+                STATE["tools_log"].clear()
+                STATE["used_skills_log"].clear()
+                STATE["memory_session_id"] = uuid.uuid4().hex
+                STATE["memory_summary"] = ""
+                STATE["memory_summarized_count"] = 0
+                STATE["memory_retrieval_count"] = 0
+                STATE["memory_retrieved_facts"] = []
+                STATE["memory_context"] = ""
                 _send_json(self, _client_state())
                 return
             if path == "/api/scan":
@@ -1651,14 +1914,26 @@ class Handler(BaseHTTPRequestHandler):
                 def write_event(event: dict) -> None:
                     _write_stream_event(self, event)
 
-                _run_agent_stream(data.get("prompt", ""), write_event, data.get("active_context"))
+                STATE["agent_running"] = True
+                try:
+                    _run_agent_stream(data.get("prompt", ""), write_event, data.get("active_context"))
+                finally:
+                    STATE["agent_running"] = False
                 return
             if path == "/api/clear":
+                try:
+                    _memory_manager().summarize_old_session(STATE["memory_session_id"])
+                except Exception:
+                    pass
                 STATE["messages"].clear()
                 STATE["tools_log"].clear()
                 STATE["used_skills_log"].clear()
                 STATE["memory_summary"] = ""
                 STATE["memory_summarized_count"] = 0
+                STATE["memory_session_id"] = uuid.uuid4().hex
+                STATE["memory_retrieval_count"] = 0
+                STATE["memory_retrieved_facts"] = []
+                STATE["memory_context"] = ""
                 STATE["git_checkpoint_workspace"] = ""
                 STATE["git_checkpoint_branch"] = ""
                 clear_approval_state()
@@ -1702,7 +1977,7 @@ class Handler(BaseHTTPRequestHandler):
                         username=str(data.get("username") or ""),
                         token=str(data.get("token") or ""),
                     )
-                    ok, message = set_workspace(destination)
+                    ok, message = _activate_workspace_memory(destination)
                     if not ok:
                         raise GitError(message)
                     STATE["git_checkpoint_workspace"] = ""
@@ -1742,6 +2017,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    _activate_workspace_memory(get_workspace())
     STATIC_DIR.mkdir(exist_ok=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Web UI running at http://{HOST}:{PORT}")
