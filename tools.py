@@ -13,6 +13,9 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from datetime import datetime
+from typing import Callable
+
+from git_manager import GitManager
 
 MAX_OUTPUT_CHARS = 8_000
 EXEC_TIMEOUT     = 15
@@ -25,6 +28,23 @@ _DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
 
 # Updated whenever the user changes the active workspace.
 WORKSPACE_DIR: Path = _DEFAULT_WORKSPACE
+GIT_APPROVAL_MODE = True
+_tool_event_sink: Callable[[dict], None] | None = None
+
+
+def set_git_config(approval_mode: bool = True) -> None:
+    global GIT_APPROVAL_MODE
+    GIT_APPROVAL_MODE = bool(approval_mode)
+
+
+def set_tool_event_sink(sink: Callable[[dict], None] | None) -> None:
+    global _tool_event_sink
+    _tool_event_sink = sink
+
+
+def _emit_tool_event(event: dict) -> None:
+    if _tool_event_sink:
+        _tool_event_sink(event)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -491,9 +511,23 @@ def tool_read_file(path: str) -> str:
 def tool_write_file(path: str, content: str) -> str:
     try:
         p = _safe_path(path)
+        manager = GitManager(get_workspace())
+        if manager.is_repo():
+            preview = manager.get_diff_preview(path, content)
+            if preview and GIT_APPROVAL_MODE:
+                if not _approval_state["always_allow"] and (not _approval_state["approved"] or _approval_state["tool_name"] != "write_file"):
+                    _request_approval("write_file", {"path": path, "content": content}, preview)
+                _approval_state["approved"] = False
+                _approval_state["tool_name"] = ""
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
-        return f"File written: {path} ({p.stat().st_size:,} bytes)"
+        commit_hash = ""
+        if manager.is_repo():
+            commit_hash = manager.stage_and_commit([path], f"Update {path} with CoderAI")
+            if commit_hash:
+                _emit_tool_event({"type": "git_commit_created", "commit": commit_hash, "message": f"Update {path} with CoderAI", "files": [path]})
+        suffix = f"; committed as {commit_hash[:8]}" if commit_hash else ""
+        return f"File written: {path} ({p.stat().st_size:,} bytes){suffix}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -711,8 +745,23 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
             updated = text.replace(old, new, int(count or 0))
         if updated == text:
             return f"No replacements were made: {path}"
+        manager = GitManager(get_workspace())
+        if manager.is_repo():
+            preview = manager.get_diff_preview(path, updated)
+            if preview and GIT_APPROVAL_MODE:
+                arguments = {"path": path, "old": old, "new": new, "regex": regex, "count": count}
+                if not _approval_state["always_allow"] and (not _approval_state["approved"] or _approval_state["tool_name"] != "replace_in_file"):
+                    _request_approval("replace_in_file", arguments, preview)
+                _approval_state["approved"] = False
+                _approval_state["tool_name"] = ""
         p.write_text(updated, encoding="utf-8")
-        return f"Replaced {changed} occurrence(s) in {path}."
+        commit_hash = ""
+        if manager.is_repo():
+            commit_hash = manager.stage_and_commit([path], f"Update {path} with CoderAI")
+            if commit_hash:
+                _emit_tool_event({"type": "git_commit_created", "commit": commit_hash, "message": f"Update {path} with CoderAI", "files": [path]})
+        suffix = f" Committed as {commit_hash[:8]}." if commit_hash else ""
+        return f"Replaced {changed} occurrence(s) in {path}.{suffix}"
     except Exception as e:
         return f"Error: {e}"
 

@@ -143,6 +143,12 @@
           </div>
 
           <div class="settings-card">
+            <span class="settings-card-title">Git checkpoints</span>
+            <label><input id="gitApprovalMode" type="checkbox" checked> Review every file diff before writing</label>
+            <span class="settings-note">Trusted mode writes and commits agent changes automatically.</span>
+          </div>
+
+          <div class="settings-card">
             <span class="settings-card-title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/></svg>
               Context &amp; memory
@@ -194,6 +200,8 @@
             <span id="fileMeta">Choose a file from the workspace</span>
           </div>
           <div class="editor-actions">
+            <button id="showCodeTab" type="button" class="editor-tab active">Code</button>
+            <button id="showGitTab" type="button" class="editor-tab">Git History</button>
             <span id="editorLanguage" class="editor-language">text</span>
             <button id="downloadCode" type="button" class="ghost" disabled>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 11 5 5 5-5"/><path d="M5 21h14"/></svg>
@@ -205,9 +213,38 @@
             </button>
           </div>
         </div>
-        <div id="codeEditorWrap" class="code-editor-wrap empty">
+        <div id="codeEditorWrap" class="code-editor-wrap editor-view active empty">
           <pre id="codeHighlight" class="code-highlight" aria-hidden="true"><code> .</code></pre>
           <textarea id="codeEditor" class="code-editor" spellcheck="false" wrap="off" placeholder="Select or generate code to edit it here." disabled></textarea>
+        </div>
+        <div id="gitHistoryView" class="git-history-view editor-view">
+          <section class="git-connect-panel">
+            <div class="git-connect-title">
+              <strong>Connect repository</strong>
+              <button id="pushGitChanges" type="button" class="primary" disabled>Push changes</button>
+            </div>
+            <label>Repository URL <input id="gitRemoteUrl" type="text" placeholder="https://github.com/owner/repository.git"></label>
+            <label>Clone folder <input id="gitCloneDestination" type="text" placeholder="C:\path\to\projects"></label>
+            <div class="git-auth-row">
+              <label>Authentication
+                <select id="gitAuthMode">
+                  <option value="system">System Git credentials</option>
+                  <option value="pat">Username and PAT</option>
+                  <option value="ssh">SSH key</option>
+                </select>
+              </label>
+              <label id="gitUsernameRow" class="git-secret-field">Username <input id="gitUsername" type="text" autocomplete="username"></label>
+              <label id="gitTokenRow" class="git-secret-field">Personal access token <input id="gitToken" type="password" autocomplete="off"></label>
+            </div>
+            <div class="git-connect-actions">
+              <button id="cloneGitRepo" type="button" class="primary">Clone repository</button>
+              <span id="gitConnectionStatus">Credentials stay in memory for this operation only.</span>
+            </div>
+            <pre id="gitCloneTerminal" class="git-clone-terminal" aria-live="polite"></pre>
+          </section>
+          <div id="gitRepoNotice" class="git-repo-notice"></div>
+          <div id="gitStatusFiles" class="git-status-files"></div>
+          <div id="gitHistoryList" class="git-history-list"></div>
         </div>
       </section>
 
@@ -256,7 +293,7 @@
     <div class="approval-card">
       <div class="approval-header">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;color:#f59e0b"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-        <strong>Execution Approval Required</strong>
+        <strong id="approvalTitle">Execution Approval Required</strong>
       </div>
       <div class="approval-body">
         <div class="approval-meta">
@@ -267,7 +304,7 @@
           <span class="approval-label">Workspace</span>
           <code id="approvalWorkspace"></code>
         </div>
-        <div class="approval-label" style="margin-top:10px;">Command / Code preview</div>
+        <div id="approvalPreviewLabel" class="approval-label" style="margin-top:10px;">Command / Code preview</div>
         <pre id="approvalPreview" class="approval-preview"></pre>
         <label class="approval-always">
           <input type="checkbox" id="approvalAlways">

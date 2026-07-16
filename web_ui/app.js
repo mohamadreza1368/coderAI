@@ -6,6 +6,8 @@ const state = {
   editorDirty: false,
   contextUsage: {},
   workspaceLocked: false,
+  pendingApprovalType: null,
+  pendingPush: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -261,6 +263,7 @@ function renderState(data) {
   $("contextTokenBudget").value = data.settings.context_token_budget || 24000;
   $("responseTokenBudget").value = data.settings.response_token_budget || 8192;
   $("tavilyEnabled").checked = !!data.settings.tavily_enabled;
+  $("gitApprovalMode").checked = data.settings.git_approval_mode !== false;
   $("tavilyApiKey").value = "";
   updateTavilyPanel(data.settings);
   const memory = data.memory || {};
@@ -277,11 +280,208 @@ function renderState(data) {
   renderFiles();
   renderSkills();
   renderPrompts();
+  renderGit(data.git || {});
   renderMessages();
   if (!renderGeneratedArtifactFromState()) {
     renderGeneratedCodeFromMessages();
   }
   if (state.workspaceLocked) setWorkspaceLocked(true);
+}
+
+function renderGit(git) {
+  const notice = $("gitRepoNotice");
+  const status = $("gitStatusFiles");
+  const history = $("gitHistoryList");
+  if (!git.is_repo) {
+    notice.innerHTML = `<span>This workspace is not a Git repository.</span><button id="initGitRepo" type="button" class="primary">Initialize Git</button>`;
+    status.innerHTML = "";
+    history.innerHTML = "";
+    $("initGitRepo").addEventListener("click", initGitRepo);
+    $("pushGitChanges").disabled = true;
+    return;
+  }
+  if (git.remote) $("gitRemoteUrl").value = git.remote;
+  $("pushGitChanges").disabled = !git.remote;
+  notice.innerHTML = `<span>Branch: <code>${escapeHtml(git.branch || "HEAD")}</code>${git.clean ? " · clean" : " · uncommitted changes"}</span>`;
+  status.textContent = (git.files || []).map((file) => `${file.status}  ${file.path}`).join("\n");
+  history.innerHTML = (git.history || []).map((commit) => `
+    <article class="git-commit">
+      <strong>${escapeHtml(commit.message)}</strong>
+      <button type="button" class="ghost git-revert" data-hash="${escapeHtml(commit.hash)}">Revert</button>
+      <span>${escapeHtml(commit.short_hash)} · ${escapeHtml(commit.author)} · ${escapeHtml(commit.date)}</span>
+    </article>
+  `).join("") || `<div class="git-repo-notice">No commits yet.</div>`;
+  document.querySelectorAll(".git-revert").forEach((button) => {
+    button.addEventListener("click", () => revertGitCommit(button.dataset.hash));
+  });
+}
+
+function gitCredentials() {
+  const usePat = $("gitAuthMode").value === "pat";
+  return {
+    username: usePat ? $("gitUsername").value.trim() : "",
+    token: usePat ? $("gitToken").value : "",
+  };
+}
+
+function updateGitAuthPanel() {
+  $("gitAuthMode").parentElement.parentElement.classList.toggle("show-pat", $("gitAuthMode").value === "pat");
+}
+
+function appendGitTerminal(line) {
+  const terminal = $("gitCloneTerminal");
+  terminal.classList.add("active");
+  terminal.textContent += `${line}\n`;
+  terminal.scrollTop = terminal.scrollHeight;
+}
+
+async function cloneGitRepository() {
+  const remoteUrl = $("gitRemoteUrl").value.trim();
+  if (!remoteUrl) {
+    $("gitRemoteUrl").focus();
+    return;
+  }
+  const terminal = $("gitCloneTerminal");
+  terminal.textContent = "";
+  setLoading(true, "Cloning repository...", true);
+  $("cloneGitRepo").disabled = true;
+  try {
+    const response = await fetch("/api/git/clone_stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        remote_url: remoteUrl,
+        destination: $("gitCloneDestination").value.trim(),
+        ...gitCredentials(),
+      }),
+    });
+    if (!response.ok || !response.body) {
+      const error = await response.json().catch(() => ({ error: "Clone request failed" }));
+      throw new Error(error.error || "Clone request failed");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === "git_clone_output") appendGitTerminal(event.content);
+        else if (event.type === "git_clone_status") appendGitTerminal(event.message);
+        else if (event.type === "git_clone_error") throw new Error(event.message);
+        else if (event.type === "git_clone_done") {
+          appendGitTerminal(`Clone completed: ${event.path}`);
+          renderState(event.state);
+          showEditorView("git");
+        }
+      }
+    }
+  } catch (error) {
+    appendGitTerminal(`ERROR: ${error.message}`);
+  } finally {
+    $("gitToken").value = "";
+    $("cloneGitRepo").disabled = false;
+    setLoading(false);
+  }
+}
+
+async function previewGitPush() {
+  const preview = await api("/api/git/push-preview", { method: "POST", body: JSON.stringify({}) });
+  const commitLines = (preview.commits || []).map((commit) => `${commit.hash}  ${commit.message}`);
+  state.pendingPush = { ...gitCredentials(), preview };
+  state.pendingApprovalType = "git-push";
+  $("approvalTitle").textContent = "Push Changes to Remote";
+  $("approvalToolName").textContent = `git push origin ${preview.branch}`;
+  $("approvalWorkspace").textContent = preview.remote;
+  $("approvalPreviewLabel").textContent = `${preview.ahead || commitLines.length} commit(s) will be pushed`;
+  $("approvalPreview").classList.remove("diff-preview");
+  $("approvalPreview").textContent = commitLines.join("\n") || "The current branch will be pushed to its remote.";
+  $("approvalAlways").parentElement.style.display = "none";
+  $("approvalApprove").textContent = "Approve and push";
+  $("approvalModal").style.display = "grid";
+}
+
+async function initGitRepo() {
+  if (!window.confirm("Initialize a Git repository in this workspace?")) return;
+  const git = await api("/api/git/init", { method: "POST", body: JSON.stringify({}) });
+  state.data.git = git;
+  renderGit(git);
+}
+
+async function revertGitCommit(hash) {
+  if (!window.confirm(`Create a revert commit for ${hash.slice(0, 8)}?`)) return;
+  const result = await api(`/api/git/revert/${encodeURIComponent(hash)}`, { method: "POST", body: JSON.stringify({}) });
+  state.data.git = result.git;
+  renderGit(result.git);
+  await refresh();
+}
+
+function showEditorView(name) {
+  const isGit = name === "git";
+  $("codeEditorWrap").classList.toggle("active", !isGit);
+  $("gitHistoryView").classList.toggle("active", isGit);
+  $("showCodeTab").classList.toggle("active", !isGit);
+  $("showGitTab").classList.toggle("active", isGit);
+}
+
+function renderDiffPreview(diff) {
+  return String(diff || "").split("\n").map((line) => {
+    let kind = "";
+    if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")) kind = "meta";
+    else if (line.startsWith("+")) kind = "add";
+    else if (line.startsWith("-")) kind = "remove";
+    return `<span class="diff-line ${kind}">${escapeHtml(line) || " "}</span>`;
+  }).join("");
+}
+
+function showApproval(event, isGitDiff = false) {
+  state.pendingApprovalType = isGitDiff ? "git" : "tool";
+  $("approvalTitle").textContent = isGitDiff ? "Review File Change" : "Execution Approval Required";
+  $("approvalToolName").textContent = event.name || "tool";
+  $("approvalWorkspace").textContent = state.data?.workspace?.path || "";
+  $("approvalPreviewLabel").textContent = isGitDiff ? "Proposed file diff" : "Command / Code preview";
+  $("approvalPreview").classList.toggle("diff-preview", isGitDiff);
+  if (isGitDiff) $("approvalPreview").innerHTML = renderDiffPreview(event.preview);
+  else $("approvalPreview").textContent = event.preview || "";
+  $("approvalAlways").checked = false;
+  $("approvalAlways").parentElement.style.display = "flex";
+  $("approvalApprove").textContent = "Approve and run";
+  $("approvalModal").style.display = "grid";
+}
+
+async function resolveApproval(approved) {
+  if (state.pendingApprovalType === "git-push") {
+    try {
+      if (approved) {
+        const result = await api("/api/git/push", {
+          method: "POST",
+          body: JSON.stringify({ approved: true, username: state.pendingPush?.username || "", token: state.pendingPush?.token || "" }),
+        });
+        state.data.git = result.git;
+        renderGit(result.git);
+        $("gitConnectionStatus").textContent = result.message || "Push completed";
+      }
+    } finally {
+      $("gitToken").value = "";
+      state.pendingPush = null;
+      state.pendingApprovalType = null;
+      $("approvalModal").style.display = "none";
+    }
+    return;
+  }
+  const prefix = state.pendingApprovalType === "git" ? "/api/git" : "/api/approval";
+  const endpoint = approved ? "approve" : "reject";
+  await api(`${prefix}/${endpoint}`, {
+    method: "POST",
+    body: JSON.stringify(approved ? { always_allow_for_session: $("approvalAlways").checked } : { reason: "Rejected by user" }),
+  });
+  $("approvalModal").style.display = "none";
+  state.pendingApprovalType = null;
 }
 
 function estimateTextTokens(text) {
@@ -662,6 +862,7 @@ async function saveSettings() {
       response_token_budget: Number($("responseTokenBudget").value),
       tavily_enabled: $("tavilyEnabled").checked,
       tavily_api_key: $("tavilyApiKey").value,
+      git_approval_mode: $("gitApprovalMode").checked,
       custom_api_url: apiUrl,
       custom_api_key: apiKey,
     }),
@@ -806,6 +1007,17 @@ async function sendPrompt(prompt) {
           appendToolStatus(event.name, JSON.stringify(event.args || {}, null, 2));
         } else if (event.type === "tool_result") {
           appendToolStatus(`${event.name} result`, String(event.result || "").slice(0, 1200));
+        } else if (event.type === "approval_required") {
+          setLoading(true, `Waiting for approval: ${event.name}`);
+          showApproval(event, false);
+        } else if (event.type === "git_diff_preview") {
+          setLoading(true, `Reviewing changes to ${event.args?.path || "file"}`);
+          showApproval(event, true);
+          showEditorView("git");
+        } else if (event.type === "git_commit_created") {
+          appendToolStatus("Git checkpoint", `${event.commit.slice(0, 8)} ${event.message}`);
+        } else if (event.type === "git_checkpoint_created") {
+          appendToolStatus("Session checkpoint", `Created branch ${event.branch}`);
         } else if (event.type === "error") {
           showStreamNotice(event.message || "Error");
         } else if (event.type === "done") {
@@ -888,6 +1100,13 @@ $("attachFile").addEventListener("click", () => {
   $("promptInput").focus();
 });
 $("downloadCode").addEventListener("click", downloadCurrentCode);
+$("showCodeTab").addEventListener("click", () => showEditorView("code"));
+$("showGitTab").addEventListener("click", () => showEditorView("git"));
+$("gitAuthMode").addEventListener("change", updateGitAuthPanel);
+$("cloneGitRepo").addEventListener("click", cloneGitRepository);
+$("pushGitChanges").addEventListener("click", () => previewGitPush().catch((error) => alert(error.message)));
+$("approvalApprove").addEventListener("click", () => resolveApproval(true));
+$("approvalReject").addEventListener("click", () => resolveApproval(false));
 $("codeEditor").addEventListener("input", () => {
   state.fileContent = $("codeEditor").value;
   state.editorDirty = true;
@@ -911,6 +1130,7 @@ $("chatForm").addEventListener("submit", async (event) => {
 });
 
 installEditorMetricStyles();
+updateGitAuthPanel();
 refresh().catch((err) => {
   $("messages").innerHTML = `<article class="message assistant"><span class="role">error</span>${escapeHtml(err.message)}</article>`;
 });

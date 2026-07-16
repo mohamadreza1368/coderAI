@@ -19,6 +19,8 @@ The folder-based package may start faster and is usually better for future insta
 - Local Ollama model support with automatic model discovery.
 - OpenAI-compatible Custom API mode.
 - Project workspace browser with file preview.
+- Git-backed agent checkpoints with reviewable diffs, automatic scoped commits, history, and safe revert commits.
+- Remote Git connection with streamed cloning, system/SSH/PAT authentication, push previews, and explicit approval before publishing changes.
 - Native folder picker for selecting a local project directory.
 - Agent tool calling for file reads, writes, replacement, search, project scans, shell commands, and Python snippets.
 - Optional Tavily web search tools, controlled from the Settings UI.
@@ -38,12 +40,14 @@ The folder-based package may start faster and is usually better for future insta
 ├── agent_runtime.py            # LangChain model runtime adapter
 ├── launcher.py                 # EXE-friendly launcher that opens the browser
 ├── tools.py                    # Tool schemas and tool execution handlers
+├── git_manager.py              # Git clone, diff, checkpoint, commit, push, and revert layer
 ├── config.py                   # Runtime configuration and environment defaults
 ├── prompt_manager.py           # System prompt discovery and loading
 ├── skills_manager.py           # Skill discovery, selection, and usage parsing
 ├── web_ui/                     # Frontend HTML, CSS, and JavaScript
 ├── system_prompts/             # Markdown system prompts
 ├── skills/                     # Skill definitions
+├── tests/                      # Runtime and Git integration tests
 └── agent_workspace/            # Default workspace when no project is selected
 ```
 
@@ -110,14 +114,30 @@ Tavily is disabled by default. To enable web search:
 
 When Tavily is disabled or no key is configured, the `web_search` and `extract_url` tools are not exposed to the model.
 
+## Git Integration
+
+Open `Git History` in the editor panel to work with a local or remote repository.
+
+To clone a repository:
+
+1. Enter its HTTPS or SSH URL.
+2. Select a parent folder. The repository name is added automatically when the selected folder already contains files.
+3. Choose an authentication method: system Git credentials, SSH key, or username and personal access token.
+4. Select `Clone repository` and follow the live command output.
+
+Agent file changes are shown as a diff before they are written when approval mode is enabled. Approved changes are committed as scoped checkpoints. Before publishing, `Push changes` shows the branch and commits that will be sent to `origin`; the push runs only after explicit confirmation.
+
+Personal access tokens are used only for the active clone or push process. They are not stored in the remote URL, repository configuration, or application state.
+
 ## TODO
 
-- Add automated tests for the agent runtime and tool execution layer.
-- Add persistent conversation memory with configurable limits.
-- Improve workspace indexing for larger projects.
-- Add richer skill validation and status reporting.
-- Add a safer approval flow for shell and Python execution tools.
-- Improve release packaging and distribution workflow.
+- Persist compacted conversation memory per workspace with configurable retention limits.
+- Add per-tool and per-workspace approval policies.
+- Add pull, fetch, branch switching, and merge-conflict assistance to Git History.
+- Improve incremental workspace indexing for large repositories.
+- Add richer skill validation, diagnostics, and execution traces.
+- Add end-to-end browser tests for clone, diff approval, checkpoint, revert, and push flows.
+- Automate signed Windows release builds and GitHub Release publishing.
 
 ## License
 
@@ -135,6 +155,9 @@ Please retain the attribution in the `NOTICE` file when redistributing this proj
 - LiteLLM is used only for token counting. If it is unavailable, the app falls back to conservative character-based estimates.
 - `LITELLM_LOCAL_MODEL_COST_MAP=True` is set to prevent LiteLLM from trying to refresh its model-cost map from the internet.
 - Tool access is constrained to the selected workspace where file operations are involved.
+- Git integration is isolated in `git_manager.py`. Agent file writes produce a dry-run diff, optionally wait for UI approval, then commit only the files changed by that tool call.
+- Git commands run without a console window on Windows. Non-Git workspaces are never initialized automatically; the UI asks first.
+- PAT credentials are passed to Git only through the child-process environment for the current clone or push operation. They are not stored in the repository URL or application state.
 
 ## Security Notes
 

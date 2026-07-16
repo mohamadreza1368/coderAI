@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -24,9 +25,11 @@ from agent_runtime import LangChainRuntime, RuntimeSettings
 from config import DEFAULT_SYSTEM_PROMPT, MODE_CUSTOM, MODE_LOCAL
 from prompt_manager import get_prompt_manager
 from skills_manager import get_skills_manager
+from git_manager import GitManager, GitError
 from tools import (
     TOOL_SCHEMAS, execute_tool, get_workspace, set_tavily_config, set_workspace,
     tool_scan_project, get_approval_state, approve_pending, reject_pending, clear_approval_state,
+    set_git_config, set_tool_event_sink,
 )
 
 APPROVAL_POLL_INTERVAL = float(os.getenv("AGENT_APPROVAL_POLL_INTERVAL", "1.0"))
@@ -46,14 +49,19 @@ def _is_approval_required(tool_output) -> dict | None:
 
 
 def _execute_tool_with_approval(name: str, args: dict, write_event=None) -> str:
-    output = execute_tool(name, args)
+    set_tool_event_sink(write_event)
+    try:
+        output = execute_tool(name, args)
+    finally:
+        set_tool_event_sink(None)
     approval_info = _is_approval_required(output)
     if not approval_info:
         return output
 
     if write_event:
+        event_type = "git_diff_preview" if name in {"write_file", "replace_in_file"} else "approval_required"
         write_event({
-            "type": "approval_required",
+            "type": event_type,
             "name": approval_info.get("tool_name", name),
             "args": approval_info.get("arguments", args),
             "preview": approval_info.get("preview", ""),
@@ -68,7 +76,11 @@ def _execute_tool_with_approval(name: str, args: dict, write_event=None) -> str:
             reason = state.get("rejection_reason") or "User rejected execution."
             return f"Execution rejected: {reason}"
         if state.get("approved") or state.get("always_allow"):
-            return execute_tool(name, args)
+            set_tool_event_sink(write_event)
+            try:
+                return execute_tool(name, args)
+            finally:
+                set_tool_event_sink(None)
         if not state.get("pending") and not state.get("approved"):
             # Cleared/reset elsewhere (e.g. chat cleared) without explicit reject.
             return f"Tool execution cancelled: {name}"
@@ -126,7 +138,10 @@ STATE = {
     "auto_continue": True,
     "tavily_enabled": os.getenv("TAVILY_ENABLED", "false").lower() == "true",
     "tavily_api_key": os.getenv("TAVILY_API_KEY", ""),
+    "git_approval_mode": True,
     "generated_artifact": None,
+    "git_checkpoint_workspace": "",
+    "git_checkpoint_branch": "",
 }
 
 sm = get_skills_manager()
@@ -175,6 +190,69 @@ def _active_tool_schemas() -> list[dict]:
 
 def _sync_tool_settings() -> None:
     set_tavily_config(bool(STATE.get("tavily_enabled")), STATE.get("tavily_api_key", ""))
+    set_git_config(bool(STATE.get("git_approval_mode", True)))
+
+
+def _git_snapshot() -> dict:
+    try:
+        manager = GitManager(get_workspace())
+        status = manager.get_status()
+        status["history"] = manager.get_log(30) if status.get("is_repo") else []
+        status["approval_mode"] = bool(STATE.get("git_approval_mode", True))
+        return status
+    except Exception as exc:
+        return {"is_repo": False, "branch": None, "files": [], "history": [], "error": str(exc), "approval_mode": bool(STATE.get("git_approval_mode", True))}
+
+
+def _validate_git_remote(remote_url: str) -> str:
+    remote_url = str(remote_url or "").strip()
+    if not remote_url:
+        raise ValueError("Repository URL is required")
+    parsed = urlparse(remote_url)
+    is_scp_style = remote_url.startswith("git@") and ":" in remote_url
+    if parsed.scheme not in {"http", "https", "ssh", "git"} and not is_scp_style:
+        raise ValueError("Use an HTTPS or SSH Git repository URL")
+    if parsed.username or parsed.password:
+        raise ValueError("Do not put credentials in the repository URL; use the authentication fields")
+    return remote_url
+
+
+def _default_clone_destination(remote_url: str) -> Path:
+    return get_workspace().parent / _git_repository_name(remote_url)
+
+
+def _git_repository_name(remote_url: str) -> str:
+    repo_name = remote_url.rstrip("/").rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+    if repo_name.lower().endswith(".git"):
+        repo_name = repo_name[:-4]
+    repo_name = re.sub(r"[^A-Za-z0-9._-]+", "-", repo_name).strip(".-") or "repository"
+    return repo_name
+
+
+def _resolve_clone_destination(remote_url: str, requested: str = "") -> Path:
+    if not requested:
+        return _default_clone_destination(remote_url).resolve()
+    destination = Path(requested).expanduser().resolve()
+    # A selected existing folder is treated as the parent directory, matching
+    # common clone dialogs. Empty/non-existent paths remain valid exact targets.
+    if destination.is_dir() and any(destination.iterdir()):
+        destination = destination / _git_repository_name(remote_url)
+    return destination
+
+
+def _ensure_session_checkpoint(write_event=None) -> str:
+    workspace = str(get_workspace())
+    if STATE.get("git_checkpoint_workspace") == workspace:
+        return STATE.get("git_checkpoint_branch", "")
+    manager = GitManager(workspace)
+    if not manager.is_repo() or not manager.get_log(1):
+        return ""
+    branch = manager.create_checkpoint_branch()
+    STATE["git_checkpoint_workspace"] = workspace
+    STATE["git_checkpoint_branch"] = branch
+    if write_event:
+        write_event({"type": "git_checkpoint_created", "branch": branch})
+    return branch
 
 
 def _send_json(handler: BaseHTTPRequestHandler, data, status: int = 200) -> None:
@@ -476,26 +554,29 @@ def _read_file(rel_path: str) -> dict:
 def _browse_local_folder(initial_dir: str = "") -> str | None:
     """Open a native folder picker on the machine running this local web server."""
     start_dir = initial_dir if initial_dir and Path(initial_dir).exists() else str(Path.home())
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        selected = filedialog.askdirectory(
-            parent=root,
-            initialdir=start_dir,
-            title="Select project folder",
-        )
-        root.destroy()
-        if selected:
-            return selected
-    except Exception:
-        pass
-
     if os.name != "nt":
-        return None
+        root = None
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            selected = filedialog.askdirectory(
+                parent=root,
+                initialdir=start_dir,
+                title="Select project folder",
+            )
+            return selected or None
+        except Exception:
+            return None
+        finally:
+            if root is not None:
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
 
     powershell = _windows_powershell_path()
     if not powershell:
@@ -1270,6 +1351,10 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
         clean_prompt = prompt
 
     _sync_tool_settings()
+    try:
+        _ensure_session_checkpoint(write_event)
+    except Exception as exc:
+        write_event({"type": "status", "message": f"Git checkpoint unavailable: {exc}"})
     model_prompt = f"{_build_workspace_context(active_context)}\n\n[User request]\n{clean_prompt}"
     STATE["messages"].append({"role": "user", "content": clean_prompt})
     write_event({"type": "state", "state": _client_state()})
@@ -1384,6 +1469,7 @@ def _client_state() -> dict:
             "auto_continue": STATE["auto_continue"],
             "tavily_enabled": STATE["tavily_enabled"],
             "tavily_key_set": bool(STATE.get("tavily_api_key")),
+            "git_approval_mode": STATE["git_approval_mode"],
         },
         "memory": {
             "enabled": STATE["memory_enabled"],
@@ -1399,6 +1485,7 @@ def _client_state() -> dict:
             "langchain_streaming_enabled": _use_langchain_streaming_runtime(),
             "langchain_error": lc_runtime.error,
         },
+        "git": _git_snapshot(),
         "context_usage": _context_usage_snapshot(),
         "prompts": _prompt_payload(),
         "models": models_payload,
@@ -1411,6 +1498,9 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/api/approval":
             _send_json(self, get_approval_state())
+            return
+        if path == "/api/git":
+            _send_json(self, _git_snapshot())
             return
         if path == "/api/state":
             _send_json(self, _client_state())
@@ -1503,6 +1593,7 @@ class Handler(BaseHTTPRequestHandler):
                     "custom_api_url", "custom_api_key", "memory_enabled",
                     "context_token_budget", "response_token_budget", "auto_continue",
                     "tavily_enabled", "tavily_api_key",
+                    "git_approval_mode",
                 ):
                     if key in data:
                         STATE[key] = data[key]
@@ -1568,6 +1659,8 @@ class Handler(BaseHTTPRequestHandler):
                 STATE["used_skills_log"].clear()
                 STATE["memory_summary"] = ""
                 STATE["memory_summarized_count"] = 0
+                STATE["git_checkpoint_workspace"] = ""
+                STATE["git_checkpoint_branch"] = ""
                 clear_approval_state()
                 _send_json(self, _client_state())
                 return
@@ -1578,6 +1671,67 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/approval/reject":
                 reject_pending(data.get("reason", ""))
                 _send_json(self, get_approval_state())
+                return
+            if path == "/api/git/approve":
+                approve_pending(bool(data.get("always_allow_for_session")))
+                _send_json(self, get_approval_state())
+                return
+            if path == "/api/git/reject":
+                reject_pending(data.get("reason", ""))
+                _send_json(self, get_approval_state())
+                return
+            if path == "/api/git/init":
+                manager = GitManager(get_workspace())
+                manager.init_repo()
+                _send_json(self, _git_snapshot())
+                return
+            if path == "/api/git/clone_stream":
+                remote_url = _validate_git_remote(data.get("remote_url", ""))
+                destination = _resolve_clone_destination(remote_url, str(data.get("destination") or ""))
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                try:
+                    _write_stream_event(self, {"type": "git_clone_status", "message": f"Cloning {remote_url}"})
+                    manager = GitManager.clone_repository(
+                        remote_url,
+                        destination,
+                        on_output=lambda line: _write_stream_event(self, {"type": "git_clone_output", "content": line}),
+                        username=str(data.get("username") or ""),
+                        token=str(data.get("token") or ""),
+                    )
+                    ok, message = set_workspace(destination)
+                    if not ok:
+                        raise GitError(message)
+                    STATE["git_checkpoint_workspace"] = ""
+                    STATE["git_checkpoint_branch"] = ""
+                    _write_stream_event(self, {"type": "git_clone_done", "path": str(destination), "git": manager.get_status(), "state": _client_state()})
+                except Exception as exc:
+                    _write_stream_event(self, {"type": "git_clone_error", "message": str(exc)})
+                return
+            if path == "/api/git/push-preview":
+                preview = GitManager(get_workspace()).get_push_preview()
+                if not preview.get("remote"):
+                    _send_json(self, {"error": "This repository has no origin remote"}, 400)
+                    return
+                _send_json(self, preview)
+                return
+            if path == "/api/git/push":
+                if data.get("approved") is not True:
+                    _send_json(self, {"error": "Explicit user approval is required before push"}, 403)
+                    return
+                output = GitManager(get_workspace()).push(
+                    username=str(data.get("username") or ""),
+                    token=str(data.get("token") or ""),
+                )
+                _send_json(self, {"ok": True, "message": output, "git": _git_snapshot()})
+                return
+            if path.startswith("/api/git/revert/"):
+                commit_hash = path.rsplit("/", 1)[-1]
+                new_hash = GitManager(get_workspace()).revert_to(commit_hash)
+                _send_json(self, {"ok": True, "commit": new_hash, "git": _git_snapshot()})
                 return
             _send_json(self, {"error": "Not found"}, 404)
         except Exception as exc:
