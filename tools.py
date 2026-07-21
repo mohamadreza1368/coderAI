@@ -16,6 +16,8 @@ from datetime import datetime
 from typing import Callable
 
 from git_manager import GitManager
+from codebase_index import CodebaseIndex, IncrementalIndexer
+from workspace_filter import iter_workspace_files, walk_workspace
 
 MAX_OUTPUT_CHARS = 8_000
 EXEC_TIMEOUT     = 15
@@ -45,6 +47,15 @@ def set_tool_event_sink(sink: Callable[[dict], None] | None) -> None:
 def _emit_tool_event(event: dict) -> None:
     if _tool_event_sink:
         _tool_event_sink(event)
+
+
+def _update_code_index(path: str, deleted: bool = False) -> None:
+    try:
+        indexer = IncrementalIndexer(CodebaseIndex(get_workspace()))
+        result = indexer.on_file_changed(path)
+        _emit_tool_event({"type": "code_index_updated", "path": path, "deleted": deleted, "chunks": result.get("chunks", 0), "result": result})
+    except Exception as exc:
+        _emit_tool_event({"type": "code_index_error", "path": path, "message": str(exc)})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -411,6 +422,44 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "search_codebase",
+            "description": "Hybrid semantic and exact-keyword search over indexed code chunks. Use for a specific function, class, file, behavior, or implementation question. Use get_project_overview for whole-project purpose or architecture questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Code symbol, filename, behavior, or implementation concept to find"},
+                    "top_k": {"type": "integer", "description": "Maximum relevant code chunks", "default": 5}
+                },
+                "required": ["query"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_project_overview",
+            "description": "Return the indexed project purpose, architecture summary, likely entry points, key file summaries, and dependency graph statistics. Use this for questions about the whole project, its structure, or how major modules collaborate.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_related_files",
+            "description": "Return files connected to a specified file through resolved imports or function calls, including relation details and file summaries.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Workspace-relative source file path"},
+                    "depth": {"type": "integer", "description": "Graph traversal depth, usually 1 or 2", "default": 1}
+                },
+                "required": ["path"]
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "scan_project",
             "description": (
                 "Build a project scan report with file lists, detected languages, "
@@ -521,6 +570,7 @@ def tool_write_file(path: str, content: str) -> str:
                 _approval_state["tool_name"] = ""
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
+        _update_code_index(path)
         commit_hash = ""
         if manager.is_repo():
             commit_hash = manager.stage_and_commit([path], f"Update {path} with CoderAI")
@@ -535,7 +585,7 @@ def tool_write_file(path: str, content: str) -> str:
 def tool_list_files(pattern: str = "**/*") -> str:
     try:
         ws = get_workspace()
-        IGNORE = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'dist', 'build', '.next'}
+        IGNORE = {'.git', '.agent_memory', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'dist', 'build', '.next'}
         matches = []
         for p in sorted(ws.glob(pattern)):
             parts = p.relative_to(ws).parts
@@ -702,7 +752,7 @@ def tool_search_files(query: str, pattern: str = "**/*", regex: bool = False, ma
         max_matches = max(1, min(int(max_matches or 80), 500))
         flags = re.IGNORECASE
         compiled = re.compile(query, flags) if regex else None
-        ignore = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'dist', 'build', '.next'}
+        ignore = {'.git', '.agent_memory', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'dist', 'build', '.next'}
         matches = []
         for path in sorted(ws.glob(pattern or "**/*")):
             if not path.is_file():
@@ -755,6 +805,7 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
                 _approval_state["approved"] = False
                 _approval_state["tool_name"] = ""
         p.write_text(updated, encoding="utf-8")
+        _update_code_index(path)
         commit_hash = ""
         if manager.is_repo():
             commit_hash = manager.stage_and_commit([path], f"Update {path} with CoderAI")
@@ -772,6 +823,7 @@ def tool_append_file(path: str, content: str) -> str:
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("a", encoding="utf-8") as f:
             f.write(content)
+        _update_code_index(path)
         return f"Appended to file: {path} ({p.stat().st_size:,} bytes)"
     except Exception as e:
         return f"Error: {e}"
@@ -794,17 +846,21 @@ def tool_project_tree(max_depth: int = 3, max_entries: int = 300) -> str:
         ignore = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode', 'dist', 'build', '.next'}
         lines = [f"{ws.name}/"]
         count = 0
-        for path in sorted(ws.rglob("*")):
-            rel = path.relative_to(ws)
-            if any(part in ignore for part in rel.parts) or len(rel.parts) > max_depth:
-                continue
-            count += 1
-            if count > max_entries:
-                lines.append(f"... more entries omitted")
-                break
-            indent = "  " * (len(rel.parts) - 1)
-            suffix = "/" if path.is_dir() else ""
-            lines.append(f"{indent}- {rel.name}{suffix}")
+        for current, directories, files in walk_workspace(ws, ignore):
+            rel_dir = current.relative_to(ws)
+            if len(rel_dir.parts) >= max_depth:
+                directories[:] = []
+            entries = [(current / name, True) for name in directories] + [(current / name, False) for name in files]
+            for path, is_dir in entries:
+                rel = path.relative_to(ws)
+                if len(rel.parts) > max_depth:
+                    continue
+                count += 1
+                if count > max_entries:
+                    lines.append("... more entries omitted")
+                    return "\n".join(lines)
+                indent = "  " * (len(rel.parts) - 1)
+                lines.append(f"{indent}- {rel.name}{'/' if is_dir else ''}")
         return "\n".join(lines)
     except Exception as e:
         return f"Error: {e}"
@@ -820,7 +876,59 @@ def tool_delete_file(path: str) -> str:
         if not p.exists():
             return f"File does not exist: {path}"
         p.unlink()
+        _update_code_index(path, deleted=True)
         return f"Deleted: {path}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def tool_search_codebase(query: str, top_k: int = 5) -> str:
+    try:
+        index = CodebaseIndex(get_workspace())
+        hits = index.retrieve_relevant_code(query, top_k)
+        if not hits:
+            status = index.status()
+            if not status["files"]:
+                return "Codebase index is empty. Build it from Files > Index before using search_codebase."
+            return f"No indexed code matched: {query}"
+        sections = [f"# Codebase search: {query}"]
+        for number, hit in enumerate(hits, 1):
+            symbol = f" · {hit['symbol_type']} `{hit['symbol_name']}`" if hit.get("symbol_name") else ""
+            sections.append(
+                f"\n## {number}. `{hit['file_path']}:{hit['start_line']}-{hit['end_line']}`{symbol}\n"
+                f"```\n{hit['content'][:3500]}\n```"
+            )
+        return "\n".join(sections)[:MAX_OUTPUT_CHARS]
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def tool_get_project_overview() -> str:
+    try:
+        overview = CodebaseIndex(get_workspace()).get_project_overview()
+        sections = ["# Project overview", overview["summary"]]
+        if overview["key_files"]:
+            sections.append("\n## Entry points and key files")
+            sections.extend(f"- `{item['file_path']}`: {item['summary']}" for item in overview["key_files"])
+        sections.append(f"\nGraph: {overview['nodes']} files, {overview['edges']} resolved dependency edges")
+        return "\n".join(sections)[:MAX_OUTPUT_CHARS]
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def tool_get_related_files(path: str, depth: int = 1) -> str:
+    try:
+        related = CodebaseIndex(get_workspace()).get_related_files(path, max(1, min(int(depth), 3)))
+        if not related:
+            return f"No resolved import or call relations found for: {path}"
+        sections = [f"# Files related to `{path}`"]
+        for item in related:
+            relations = ", ".join(
+                f"{edge['relation_type']}:{edge['detail']} ({edge['from_file']} -> {edge['to_file']})"
+                for edge in item["relations"]
+            )
+            sections.append(f"- `{item['file_path']}` — {relations}\n  {item['summary']}")
+        return "\n".join(sections)[:MAX_OUTPUT_CHARS]
     except Exception as e:
         return f"Error: {e}"
 
@@ -828,15 +936,12 @@ def tool_delete_file(path: str) -> str:
 def tool_scan_project(max_files: int = 200) -> str:
     """Build an initial project structure report."""
     ws = get_workspace()
-    IGNORE = {'.git', '__pycache__', 'node_modules', '.venv', 'venv',
+    IGNORE = {'.git', '.agent_memory', '__pycache__', 'node_modules', '.venv', 'venv',
               '.idea', '.vscode', 'dist', 'build', '.next', '.mypy_cache'}
 
     all_files: list[Path] = []
-    for p in sorted(ws.rglob("*")):
-        if p.is_file():
-            parts = p.relative_to(ws).parts
-            if not any(part in IGNORE for part in parts):
-                all_files.append(p)
+    for p in sorted(iter_workspace_files(ws, IGNORE)):
+        all_files.append(p)
 
     if not all_files:
         return "The project is empty."
@@ -905,6 +1010,9 @@ _HANDLERS: dict = {
     "project_tree": lambda a: tool_project_tree(a.get("max_depth", 3), a.get("max_entries", 300)),
     "current_time": lambda a: tool_current_time(),
     "delete_file":  lambda a: tool_delete_file(a["path"]),
+    "search_codebase": lambda a: tool_search_codebase(a["query"], a.get("top_k", 5)),
+    "get_project_overview": lambda a: tool_get_project_overview(),
+    "get_related_files": lambda a: tool_get_related_files(a["path"], a.get("depth", 1)),
     "scan_project": lambda a: tool_scan_project(a.get("max_files", 200)),
 }
 

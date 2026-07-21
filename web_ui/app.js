@@ -266,6 +266,7 @@ function renderState(data) {
   $("responseTokenBudget").value = data.settings.response_token_budget || 8192;
   $("tavilyEnabled").checked = !!data.settings.tavily_enabled;
   $("gitApprovalMode").checked = data.settings.git_approval_mode !== false;
+  $("smartSkillConfirmation").checked = !!data.settings.smart_skill_confirmation;
   $("tavilyApiKey").value = "";
   updateTavilyPanel(data.settings);
   const memory = data.memory || {};
@@ -284,6 +285,7 @@ function renderState(data) {
   $("systemPromptEditor").value = data.settings.system_prompt || "";
   $("selectedPromptName").textContent = data.settings.selected_prompt || "Custom system prompt";
   renderFiles();
+  renderCodeIndex(data.code_index || {});
   renderSkills();
   renderPrompts();
   renderMemory(data.memory?.persistent || {});
@@ -349,7 +351,7 @@ async function openProjectHome(projectId) {
 }
 
 function renderProjectHome() {
-  const { card, sessions = [], files = [], facts = [], preferences = {} } = state.projectArchive || {};
+  const { card, sessions = [], files = [], facts = [], preferences = {}, skill_usage = {} } = state.projectArchive || {};
   const dirty = Number(card?.git?.files?.length || 0);
   $("projectQuickStats").innerHTML = [
     [card?.stats?.files || 0, "Files"], [formatSize(Number(card?.stats?.kb || 0) * 1024), "Workspace size"],
@@ -364,9 +366,28 @@ function renderProjectHome() {
   $("projectSessionList").innerHTML = sessions.map((session) => `<button type="button" class="project-session-row" data-session-id="${escapeHtml(session.id)}"><i class="activity-dot"></i><div><strong>${escapeHtml(session.title)}</strong><span>${session.turns} turns · ${escapeHtml(state.data?.settings?.model || "model")}</span></div><span>${formatRelativeTime(session.updated_at)}</span></button>`).join("") || `<div class="memory-item-source">No sessions for this project.</div>`;
   $("projectFileGrid").innerHTML = files.map((file) => `<button type="button" class="project-file-row" data-path="${escapeHtml(file.path)}"><span>${escapeHtml(file.path)}</span><small>${formatSize(file.size)}</small></button>`).join("") || `<div class="memory-item-source">No files found.</div>`;
   $("projectMemoryContent").innerHTML = `<section class="project-memory-group"><h2>Semantic Facts</h2><ul>${facts.map((fact) => `<li>${escapeHtml(fact.fact)}</li>`).join("") || "<li>No saved facts</li>"}</ul></section><section class="project-memory-group"><h2>Preferences</h2><ul>${Object.entries(preferences).map(([key, value]) => `<li><strong>${escapeHtml(key)}</strong>: ${escapeHtml(value)}</li>`).join("") || "<li>No saved preferences</li>"}</ul></section>`;
-  $("projectSkillsContent").innerHTML = (state.data?.skills || []).map((skill) => `<div class="project-skill"><strong>/${escapeHtml(skill.name)}</strong><span>${escapeHtml(skill.description || skill.category)}</span></div>`).join("");
+  $("projectSkillsContent").innerHTML = (skill_usage.skills || []).map((skill) => `<button type="button" class="project-skill ${skill.disabled ? "disabled" : ""}" data-skill-name="${escapeHtml(skill.name)}"><strong>/${escapeHtml(skill.name)}</strong><span>${skill.project_uses} project uses · ${skill.global_uses} global · ${skill.success_rate == null ? "no outcomes" : `${skill.success_rate}% success`}</span><span>${skill.top_keywords?.length ? `Top triggers: ${skill.top_keywords.map(([word]) => escapeHtml(word)).join(", ")}` : "No trigger keywords yet"}</span></button>`).join("");
+  renderRoutingNotice("projectSkillsRoutingNotice", skill_usage.routing || {});
   document.querySelectorAll(".project-session-row").forEach((button) => button.addEventListener("click", () => resumeProjectSession(button.dataset.sessionId)));
   document.querySelectorAll(".project-file-row").forEach((button) => button.addEventListener("click", async () => { await openProjectInEditor(false); await loadFile(button.dataset.path); }));
+  document.querySelectorAll(".project-skill").forEach((button) => button.addEventListener("click", () => showProjectSkillDetail(button.dataset.skillName)));
+}
+
+async function showProjectSkillDetail(name) {
+  const source = await api(`/api/skill/source?name=${encodeURIComponent(name)}`);
+  const stats = (state.projectArchive?.skill_usage?.skills || []).find((skill) => skill.name === name) || {};
+  $("projectSkillDetail").innerHTML = `<div class="project-skill-detail-head"><div><h2>/${escapeHtml(name)}</h2><span>${stats.project_uses || 0} project uses · ${stats.global_uses || 0} global · ${stats.success_rate == null ? "No success data" : `${stats.success_rate}% success`}</span></div><label>Mode <select id="projectSkillMode"><option value="auto">Auto</option><option value="pinned">Pinned</option><option value="off">Off</option></select></label></div><textarea id="projectSkillSource" spellcheck="false"></textarea><div class="project-skill-detail-actions"><code>${escapeHtml(source.path)}</code><button id="saveProjectSkill" type="button" class="primary">Save SKILL.md</button></div>`;
+  $("projectSkillSource").value = source.content;
+  $("projectSkillMode").value = stats.mode || "auto";
+  $("projectSkillMode").addEventListener("change", async () => {
+    const updated = await api("/api/skills/mode", { method: "POST", body: JSON.stringify({ skill_name: name, mode: $("projectSkillMode").value, workspace_path: state.projectArchive?.card?.workspace_path }) });
+    state.projectArchive.skill_usage = updated.skill_usage;
+    renderProjectHome(); showProjectSkillDetail(name);
+  });
+  $("saveProjectSkill").addEventListener("click", async () => {
+    await api("/api/skill/source", { method: "POST", body: JSON.stringify({ name, content: $("projectSkillSource").value }) });
+    $("saveProjectSkill").textContent = "Saved";
+  });
 }
 
 function activateProjectTab(name) {
@@ -795,21 +816,23 @@ function renderFiles() {
 }
 
 function renderSkills() {
-  const selected = new Set(state.data?.selected_skills || []);
+  const usage = new Map((state.data?.skill_usage?.skills || []).map((item) => [item.name, item]));
   $("skillsList").innerHTML = (state.data?.skills || []).map((skill) => `
-    <button class="skill-item ${selected.has(skill.name) ? "selected" : ""}" data-skill="${escapeHtml(skill.name)}" ${skill.disabled ? "disabled" : ""}>
+    <button class="skill-item skill-mode-${usage.get(skill.name)?.mode || "auto"}" data-skill="${escapeHtml(skill.name)}" ${skill.disabled ? "disabled" : ""}>
       /${escapeHtml(skill.name)}
-      <span class="skill-desc">${escapeHtml(skill.description || skill.category)}</span>
+      <span class="skill-mode-label">${usage.get(skill.name)?.mode === "pinned" ? "Pinned" : usage.get(skill.name)?.mode === "off" ? "Off" : "Auto"}</span>
+      <span class="skill-desc">${escapeHtml(skill.description || skill.category)} · ${usage.get(skill.name)?.project_uses || 0} uses${usage.get(skill.name)?.project_uses ? "" : " ⚠"}</span>
     </button>
   `).join("");
+  renderRoutingNotice("skillsRoutingNotice", state.data?.skill_usage?.routing || {});
+  $("skillsRecentUsage").innerHTML = (state.data?.skill_usage?.recent || []).slice(0, 20).map((event) => `<div class="skill-usage-row"><strong>/${escapeHtml(event.skill_name)}</strong><span>${escapeHtml(event.status)} · ${formatRelativeTime(event.timestamp)} · session ${escapeHtml(event.session_id.slice(0, 6))}</span></div>`).join("") || `<div class="memory-item-source">No skill usage recorded for this project.</div>`;
   document.querySelectorAll(".skill-item").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      const next = new Set(state.data.selected_skills || []);
-      if (next.has(btn.dataset.skill)) next.delete(btn.dataset.skill);
-      else next.add(btn.dataset.skill);
-      renderState(await api("/api/skills", {
+      const current = usage.get(btn.dataset.skill)?.mode || "auto";
+      const next = current === "auto" ? "pinned" : current === "pinned" ? "off" : "auto";
+      renderState(await api("/api/skills/mode", {
         method: "POST",
-        body: JSON.stringify({ selected_skills: Array.from(next) }),
+        body: JSON.stringify({ skill_name: btn.dataset.skill, mode: next }),
       }));
     });
   });
@@ -837,15 +860,20 @@ function renderPrompts() {
 function renderMessages() {
   const messages = state.data?.messages || [];
   const toolsLog = state.data?.tools_log || [];
+  const currentSession = state.data?.memory?.persistent?.session_id;
+  const skillEvents = (state.data?.skill_usage?.recent || []).filter((event) => event.session_id === currentSession);
   $("messages").innerHTML = messages.map((msg, index) => {
     const assistantIndex = messages.slice(0, index + 1).filter((m) => m.role === "assistant").length - 1;
     const tools = msg.role === "assistant" && toolsLog[assistantIndex] ? toolsLog[assistantIndex] : [];
+    const turnEvents = msg.role === "assistant" ? skillEvents.filter((event) => event.turn_index === assistantIndex + 1 && ["selected", "applied", "failed"].includes(event.status)) : [];
+    const skillHtml = turnEvents.map((event) => `<div class="skill-event-box ${event.status === "failed" ? "failed" : ""}"><strong>${event.status === "selected" ? "Using skill" : event.status === "applied" ? "Skill applied" : "Skill failed"}: /${escapeHtml(event.skill_name)}</strong><span>${event.matched_keywords?.length ? `matched: ${event.matched_keywords.map((word) => `&quot;${escapeHtml(word)}&quot;`).join(", ")}` : escapeHtml(event.triggered_by)}</span></div>`).join("");
     const toolHtml = tools.length ? `<div class="tool-box">${escapeHtml(tools.map((t) =>
       `${t.name}(${JSON.stringify(t.args || {})})\n${String(t.result || "").slice(0, 1200)}`
     ).join("\n\n"))}</div>` : "";
     return `
       <article class="message ${msg.role}">
         <span class="role">${msg.role}</span>
+        ${skillHtml}
         ${renderMessageContent(msg)}
         ${toolHtml}
       </article>
@@ -1050,6 +1078,99 @@ async function refresh() {
   await showProjects();
 }
 
+function renderCodeIndex(index = {}) {
+  $("indexFileCount").textContent = Number(index.files || 0).toLocaleString();
+  $("indexSymbolCount").textContent = Number(index.symbols || 0).toLocaleString();
+  $("indexChunkCount").textContent = Number(index.chunks || 0).toLocaleString();
+  const hasIndex = Number(index.files || 0) > 0;
+  const fresh = index.up_to_date;
+  $("indexFreshness").textContent = !hasIndex ? "Not indexed" : fresh === false ? "Changes detected" : fresh === true ? "Up to date" : "Ready";
+  $("indexLastRun").textContent = index.last_indexed ? formatRelativeTime(index.last_indexed) : "Never";
+  $("indexEmbeddingModel").textContent = index.embedding_model || "nomic-embed-text";
+  $("indexVectorBackend").textContent = index.vector_backend || "SQLite fallback";
+  $("indexStatusDot").className = hasIndex && fresh !== false ? "ready" : hasIndex ? "stale" : "";
+  const embeddingError = index.embedding_error || "";
+  const vectorError = index.vector_error || "";
+  const notice = embeddingError
+    ? `Keyword search is active; semantic embeddings are unavailable: ${embeddingError}`
+    : vectorError
+      ? `SQLite vector fallback is active; Chroma is unavailable: ${vectorError}`
+      : "";
+  $("indexError").textContent = notice;
+  $("indexError").classList.toggle("visible", Boolean(notice));
+  if (index.project_summary) $("indexProjectSummary").textContent = index.project_summary;
+  $("indexGraphStats").textContent = `${Number(index.graph_nodes || 0)} files · ${Number(index.graph_edges || 0)} relations`;
+}
+
+function renderProjectIntelligence(payload = {}) {
+  const overview = payload.overview || {};
+  $("indexProjectSummary").textContent = overview.summary || "Build the index to generate a project-level architecture summary.";
+  $("indexGraphStats").textContent = `${Number(overview.nodes || 0)} files · ${Number(overview.edges || 0)} relations`;
+  $("indexEntryPoints").innerHTML = (overview.entry_points || []).map((path) => `<code title="${escapeHtml(path)}">${escapeHtml(path)}</code>`).join("");
+  const lines = [];
+  (payload.graph || []).forEach((node) => {
+    lines.push(`▾ ${node.file_path}`);
+    (node.related || []).forEach((edge) => lines.push(`   ${edge.relation_type} → ${edge.to_file}  [${edge.detail}]`));
+  });
+  $("indexDependencyTree").textContent = lines.join("\n") || "No resolved project dependencies yet.";
+}
+
+async function refreshCodeIndex() {
+  const [index, intelligence] = await Promise.all([api("/api/index"), api("/api/index/overview")]);
+  if (state.data) state.data.code_index = index;
+  renderCodeIndex(index);
+  renderProjectIntelligence(intelligence);
+}
+
+async function runCodeIndex(path, label) {
+  setLoading(true, label, false);
+  $("syncCodeIndex").disabled = true;
+  $("rebuildCodeIndex").disabled = true;
+  try {
+    const index = await api(path, { method: "POST", body: "{}" });
+    if (state.data) state.data.code_index = index;
+    renderCodeIndex(index);
+    await refreshCodeIndex();
+  } catch (err) {
+    $("indexError").textContent = err.message;
+    $("indexError").classList.add("visible");
+  } finally {
+    $("syncCodeIndex").disabled = false;
+    $("rebuildCodeIndex").disabled = false;
+    setLoading(false);
+  }
+}
+
+function activateFileView(name) {
+  document.querySelectorAll(".file-view-tab").forEach((button) => button.classList.toggle("active", button.dataset.fileView === name));
+  $("fileBrowserView").classList.toggle("active", name === "browser");
+  $("codeIndexView").classList.toggle("active", name === "index");
+  if (name === "index") refreshCodeIndex().catch((err) => {
+    $("indexError").textContent = err.message;
+    $("indexError").classList.add("visible");
+  });
+}
+
+function renderRoutingNotice(id, routing) {
+  const skipped = routing.skipped || [];
+  const details = [];
+  if (skipped.length) details.push(`${skipped.length} matched skill(s) skipped by the ${routing.limit || 3}-skill context limit: ${skipped.join(", ")}`);
+  if (routing.confirmation_used) details.push("Smart LLM confirmation was used");
+  if (routing.selected?.length) details.push(`Active: ${routing.selected.join(", ")}`);
+  $(id).textContent = details.join(" · ");
+  $(id).classList.toggle("visible", details.length > 0);
+}
+
+function appendSkillStatus(event) {
+  const article = document.createElement("article");
+  article.className = `message assistant skill-event ${event.type === "skill_failed" ? "failed" : ""}`;
+  const keywords = (event.matched_keywords || []).map((word) => `"${word}"`).join(", ");
+  const title = event.type === "skill_applied" ? "Skill applied" : event.type === "skill_failed" ? "Skill failed" : "Using skill";
+  article.innerHTML = `<span class="role">skill</span><div class="skill-event-box"><strong>${title}: /${escapeHtml(event.skill)}</strong><span>${escapeHtml(event.reason || (keywords ? `matched: ${keywords}` : ""))}</span></div>`;
+  $("messages").appendChild(article);
+  $("messages").scrollTop = $("messages").scrollHeight;
+}
+
 async function openWorkspace() {
   const data = await api("/api/workspace", {
     method: "POST",
@@ -1105,6 +1226,7 @@ async function saveSettings() {
       tavily_enabled: $("tavilyEnabled").checked,
       tavily_api_key: $("tavilyApiKey").value,
       git_approval_mode: $("gitApprovalMode").checked,
+      smart_skill_confirmation: $("smartSkillConfirmation").checked,
       custom_api_url: apiUrl,
       custom_api_key: apiKey,
     }),
@@ -1249,6 +1371,8 @@ async function sendPrompt(prompt) {
           appendToolStatus(event.name, JSON.stringify(event.args || {}, null, 2));
         } else if (event.type === "tool_result") {
           appendToolStatus(`${event.name} result`, String(event.result || "").slice(0, 1200));
+        } else if (event.type === "skill_selected" || event.type === "skill_applied" || event.type === "skill_failed") {
+          appendSkillStatus(event);
         } else if (event.type === "approval_required") {
           setLoading(true, `Waiting for approval: ${event.name}`);
           showApproval(event, false);
@@ -1262,6 +1386,12 @@ async function sendPrompt(prompt) {
           appendToolStatus("Session checkpoint", `Created branch ${event.branch}`);
         } else if (event.type === "memory_used") {
           $("memoryUsageIndicator").textContent = `${event.count} memory fact(s) used`;
+        } else if (event.type === "code_rag_used") {
+          appendToolStatus("Codebase context", event.query_type === "project_level" ? "Project overview and dependency graph loaded" : `${event.count} relevant chunk(s) plus graph relations loaded`);
+        } else if (event.type === "code_index_updated") {
+          appendToolStatus("Code index", `${event.path || "File"} updated · ${event.chunks || 0} chunk(s)`);
+        } else if (event.type === "code_index_error") {
+          appendToolStatus("Code index warning", event.message || "Index update failed");
         } else if (event.type === "error") {
           showStreamNotice(event.message || "Error");
         } else if (event.type === "done") {
@@ -1334,6 +1464,23 @@ $("newProject").addEventListener("click", async () => { showWorkbench(); setActi
 $("openRuntimeSettings").addEventListener("click", () => { showWorkbench(); setActiveActivity("Settings"); activateTab("settings"); });
 
 $("fileSearch").addEventListener("input", renderFiles);
+document.querySelectorAll(".file-view-tab").forEach((button) => button.addEventListener("click", () => activateFileView(button.dataset.fileView)));
+$("syncCodeIndex").addEventListener("click", () => runCodeIndex("/api/index/sync", "Syncing codebase index..."));
+$("rebuildCodeIndex").addEventListener("click", () => runCodeIndex("/api/index/rebuild", "Rebuilding codebase index..."));
+$("regenerateProjectSummary").addEventListener("click", async () => {
+  setLoading(true, "Regenerating project overview with the local model...", false);
+  $("regenerateProjectSummary").disabled = true;
+  try {
+    await api("/api/index/regenerate-summary", {method: "POST", body: JSON.stringify({use_model: true})});
+    await refreshCodeIndex();
+  } catch (err) {
+    $("indexError").textContent = err.message;
+    $("indexError").classList.add("visible");
+  } finally {
+    $("regenerateProjectSummary").disabled = false;
+    setLoading(false);
+  }
+});
 $("promptSearch").addEventListener("input", renderPrompts);
 $("openWorkspace").addEventListener("click", openWorkspace);
 $("browseWorkspace").addEventListener("click", browseWorkspace);

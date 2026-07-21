@@ -19,6 +19,7 @@ The folder-based package may start faster and is usually better for future insta
 - Local Ollama model support with automatic model discovery.
 - OpenAI-compatible Custom API mode.
 - Project workspace browser with file preview.
+- Incremental graph-aware Codebase RAG with structural chunking, hierarchical summaries, hybrid retrieval, and local Ollama embeddings.
 - Dedicated Projects dashboard with workspace cards, Git state, file statistics, session counts, recent activity, and agent status.
 - Project Home views with Overview, Sessions, Files, Memory, Skills, and Settings tabs.
 - Git-backed agent checkpoints with reviewable diffs, automatic scoped commits, history, and safe revert commits.
@@ -28,6 +29,7 @@ The folder-based package may start faster and is usually better for future insta
 - Optional Tavily web search tools, controlled from the Settings UI.
 - System prompt manager backed by Markdown files in `system_prompts/`.
 - Skill manager backed by `skills/**/SKILL.md`.
+- Transparent skill tracking with real-time selection badges, trigger reasons, per-project/global usage, success rates, and recent lifecycle events.
 - LangChain-backed model runtime for Ollama and OpenAI-compatible APIs, with a local HTTP fallback.
 - Streaming chat responses and live generated-code preview.
 - Context window usage meter with token estimates and percentage warnings.
@@ -45,9 +47,14 @@ The folder-based package may start faster and is usually better for future insta
 ├── tools.py                    # Tool schemas and tool execution handlers
 ├── git_manager.py              # Git clone, diff, checkpoint, commit, push, and revert layer
 ├── memory_manager.py           # SQLite episodic, semantic, and procedural memory
+├── codebase_index.py           # Discovery, structural chunking, incremental hybrid code index
+├── project_intelligence.py     # Dependency graph, hierarchical summaries, and query routing
+├── vector_store.py             # Shared local Ollama embedding and Chroma adapter
 ├── config.py                   # Runtime configuration and environment defaults
 ├── prompt_manager.py           # System prompt discovery and loading
 ├── skills_manager.py           # Skill discovery, selection, and usage parsing
+├── skill_router.py             # Fast, semantic, and optional LLM skill-selection funnel
+├── skill_tracker.py            # Persistent selected/loaded/applied/failed skill events and analytics
 ├── web_ui/                     # Frontend HTML, CSS, and JavaScript
 ├── system_prompts/             # Markdown system prompts
 ├── skills/                     # Skill definitions
@@ -140,6 +147,7 @@ CoderAI keeps one central archive beside the application so every workspace and 
 ```text
 coderai_data/
 ├── memory.db                   # SQLite conversations, facts, preferences, and session summaries
+├── skill_usage.db              # Project-scoped skill lifecycle events and usage statistics
 ├── vectors/                    # Reserved embedded vector-index storage
 └── facts.jsonl                 # Append-only semantic-memory audit log
 ```
@@ -156,13 +164,80 @@ Open `Projects` from the left activity rail to browse workspace cards and enter 
 
 In source mode, `coderai_data/` is created beside the application source. In packaged builds it is created beside the executable. Set `CODERAI_DATA_DIR` to store the archive elsewhere.
 
+## Skill Usage Tracking
+
+Skills are selected with an explicit reason from slash commands, pinned project selections, or matched keywords. CoderAI records `selected` and `loaded` separately from `applied`, so adding a skill to model context is not counted as successful usage unless the model declares that it actually used the skill. Runtime failures are recorded as `failed` outcomes.
+
+The chat stream displays skill selection and application badges in real time. The workspace Skills tab shows available skills and recent lifecycle events. The Project Home Skills tab provides project and global usage counts, last-used time, success rate, top trigger keywords, `SKILL.md` inspection/editing, and a project-specific disable control.
+
+Automatic selection uses a three-stage funnel: normalized trigger matching (including Persian letter, digit, and half-space normalization), semantic ranking from cached skill-description embeddings, and optional LLM confirmation for ambiguous candidates. Ollama embeddings use `nomic-embed-text` by default and can be changed with `OLLAMA_EMBEDDING_MODEL`; a local feature-vector fallback keeps routing available when the embedding model is not installed. Smart confirmation is controlled from Settings because it adds a small model call. At most three skills are injected per turn.
+
+Each project stores one of three modes per skill: `Auto`, `Pinned`, or `Off`. Pinned skills are always loaded, Off skills are excluded from automatic and explicit routing, and Auto skills pass through the routing funnel. When matching exceeds the context limit, the UI reports which skills were skipped.
+
+## Codebase RAG
+
+Open `Files > Index` to build or inspect the active workspace index. Discovery respects `.gitignore`, excludes generated and binary directories, and stores index data inside the workspace:
+
+```text
+.agent_memory/
+├── code_index.db               # SQLite metadata, chunks, hashes, and FTS5 index
+└── code_vectors/               # Embedded Chroma vector collection
+```
+
+Python files are split by module, class, and function boundaries using the AST. Other supported source and documentation files use bounded logical chunks. Every chunk records its source path, symbol, line range, modification time, and content hash.
+
+Retrieval combines exact keyword/BM25 matches with semantic similarity from local Ollama embeddings (`nomic-embed-text` by default). Only the highest-ranked chunks are injected into a turn, with file paths and line numbers. If Ollama embeddings or Chroma are unavailable, keyword retrieval remains operational and vectors stored in SQLite provide a lightweight fallback when embeddings are available.
+
+The index also builds a directed project graph from resolved imports and function calls. Cached summaries are stored at file, folder, and project levels. A query router separates whole-project questions from implementation questions: project-level requests receive the architecture overview and key entry-point summaries, while code-level requests use hybrid chunk retrieval followed by one-hop graph expansion. This prevents architecture answers from collapsing into an explanation of a single file.
+
+The Index view exposes the project overview, likely entry points, graph statistics, and a textual dependency tree. `Regenerate` can improve the cached structural overview with the currently selected local Ollama model. The agent can call `get_project_overview` for architecture questions and `get_related_files` for import/call relationships.
+
+Agent writes, replacements, appends, and deletes update the affected file immediately. `Sync changes` compares content hashes across the workspace, while `Re-index workspace` performs a clean rebuild. The agent can also call `search_codebase` for focused retrieval and `scan_project` for a broad project overview.
+
+### Using Project Intelligence
+
+1. Open or browse to a project from the Workspace panel.
+2. Select `Files > Index`.
+3. Select `Re-index workspace` the first time the project is opened.
+4. Confirm that the Index view shows files, symbols, chunks, a project overview, entry points, and dependency relations.
+5. Ask the agent a project-level or code-level question.
+
+Project-level examples:
+
+```text
+What does this project do?
+Explain the architecture of this project.
+How do the main modules collaborate?
+Where does application execution begin?
+```
+
+These questions are routed to the cached project summary, entry-point summaries, and dependency graph instead of a single code chunk.
+
+Code-level examples:
+
+```text
+Where is load_config defined and called?
+Which files are related to web_app.py?
+Trace the file-save flow from the UI to the backend.
+```
+
+These questions use hybrid chunk retrieval followed by graph expansion to include related imports and callers. The agent can explicitly use `get_project_overview`, `get_related_files`, or `search_codebase` when more context is needed.
+
+Use `Sync changes` after external edits. Changes written by the agent update the affected file automatically. Use `Re-index workspace` after large refactors or dependency changes. `Regenerate` asks the selected Ollama model to rewrite the structural project overview; the deterministic cached overview remains available when model-based regeneration cannot run.
+
+Virtual environments and dependency directories are pruned before traversal. Folders containing `pyvenv.cfg` or `conda-meta`, plus directories such as `site-packages`, `.venv`, `venv`, `env`, `node_modules`, build output, and caches are not displayed or indexed.
+
+### Portable Build Notes
+
+The Windows portable executable includes the built-in Ollama HTTP runtime, SQLite/FTS5 indexing, project dependency graphs, persistent memory, Git integration, and the complete web UI. Optional Python integrations are used when bundled in a build; otherwise the application falls back to its built-in runtime and SQLite retrieval. Ollama itself remains a separate local application and must be running when Local Ollama mode is selected.
+
 ## TODO
 
 - Add per-tool and per-workspace approval policies.
 - Add pull, fetch, branch switching, and merge-conflict assistance to Git History.
-- Improve incremental workspace indexing for large repositories.
+- Add tree-sitter structural chunking for JavaScript, TypeScript, Java, and additional languages.
 - Add richer skill validation, diagnostics, and execution traces.
-- Add optional local embedding providers and `sqlite-vec` retrieval for deeper semantic matching.
+- Add optional `sqlite-vec` acceleration for the SQLite semantic fallback.
 - Add opt-in background fact extraction with review before facts become durable memory.
 - Add end-to-end browser tests for clone, diff approval, checkpoint, revert, and push flows.
 - Automate signed Windows release builds and GitHub Release publishing.

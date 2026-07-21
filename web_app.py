@@ -28,6 +28,10 @@ from prompt_manager import get_prompt_manager
 from skills_manager import get_skills_manager
 from git_manager import GitManager, GitError
 from memory_manager import MemoryManager
+from skill_tracker import SkillTracker
+from skill_router import SkillRouter
+from codebase_index import CodebaseIndex
+from workspace_filter import iter_workspace_files
 from tools import (
     TOOL_SCHEMAS, execute_tool, get_workspace, set_tavily_config, set_workspace,
     tool_scan_project, get_approval_state, approve_pending, reject_pending, clear_approval_state,
@@ -148,11 +152,132 @@ STATE = {
     "generated_artifact": None,
     "git_checkpoint_workspace": "",
     "git_checkpoint_branch": "",
+    "smart_skill_confirmation": False,
+    "skill_routing": {},
+    "code_rag_hits": [],
+    "code_rag_type": "",
 }
 
 sm = get_skills_manager()
 pm = get_prompt_manager()
 lc_runtime = LangChainRuntime()
+skill_router = SkillRouter()
+
+
+def _skill_tracker(workspace: str | Path | None = None) -> SkillTracker:
+    return SkillTracker(workspace or get_workspace())
+
+
+def _known_project_workspace(workspace: str | Path | None) -> Path:
+    if not workspace:
+        return get_workspace().resolve()
+    requested = Path(workspace).resolve()
+    known = {Path(project["workspace_path"]).resolve() for project in _memory_manager().list_projects()}
+    if requested not in known:
+        raise PermissionError("Unknown project workspace")
+    return requested
+
+
+def _skill_usage_payload(workspace: str | Path | None = None) -> dict:
+    tracker = _skill_tracker(workspace)
+    report = tracker.report([skill.name for skill in sm.all()])
+    definitions = {skill.name: skill for skill in sm.all()}
+    for item in report["skills"]:
+        skill = definitions.get(item["name"])
+        item.update({
+            "description": skill.description if skill else "",
+            "category": skill.category if skill else "misc",
+            "path": str(skill.path) if skill else "",
+        })
+    report["routing"] = STATE.get("skill_routing", {}) if workspace is None or Path(workspace).resolve() == get_workspace().resolve() else {}
+    return report
+
+
+def _confirm_skill_candidates(prompt: str, candidates: list) -> list[str]:
+    if not candidates:
+        return []
+    candidate_text = "\n".join(f"- {item.skill.name}: {item.skill.description}" for item in candidates)
+    history = [{
+        "role": "user",
+        "content": (
+            "Select only the skills genuinely required for this request. Return only a JSON array of skill names.\n\n"
+            f"User request:\n{prompt}\n\nCandidate skills:\n{candidate_text}"
+        ),
+    }]
+    try:
+        result = _call_model(history)
+        content = str(result.get("content") or "")
+        match = re.search(r"\[[\s\S]*?\]", content)
+        names = json.loads(match.group(0)) if match else []
+        allowed = {item.skill.name for item in candidates}
+        return [str(name) for name in names if str(name) in allowed]
+    except Exception:
+        return [item.skill.name for item in candidates]
+
+
+def _prepare_skill_turn(prompt: str, write_event=None) -> tuple[str, list, str, int]:
+    tracker = _skill_tracker()
+    triggered = sm.detect_skill_commands(prompt)
+    route = skill_router.route(
+        prompt, sm.all(), tracker.skill_modes(), [skill.name for skill in triggered], max_active=3,
+        smart_confirmation=bool(STATE.get("smart_skill_confirmation")), confirmer=_confirm_skill_candidates,
+    )
+    selections = route.selected
+    STATE["selected_skills"] = [item.skill.name for item in selections if item.triggered_by == "pinned"]
+    STATE["skill_routing"] = {
+        "selected": [item.skill.name for item in selections],
+        "skipped": [item.skill.name for item in route.skipped],
+        "confirmation_used": route.confirmation_used,
+        "semantic_available": route.semantic_available,
+        "limit": 3,
+    }
+    if triggered:
+        clean_prompt = sm.strip_commands(prompt) or "Use these skills: " + ", ".join(f"/{skill.name}" for skill in triggered)
+    else:
+        clean_prompt = prompt
+    turn_index = 1 + sum(1 for message in STATE["messages"] if message.get("role") == "user")
+    auto_injection = []
+    pinned = set(STATE.get("selected_skills", []))
+    for selection in selections:
+        tracker.log_usage(
+            STATE["memory_session_id"], selection.skill.name, selection.triggered_by,
+            selection.matched_keywords, "selected", turn_index,
+        )
+        tracker.log_usage(
+            STATE["memory_session_id"], selection.skill.name, selection.triggered_by,
+            selection.matched_keywords, "loaded", turn_index,
+        )
+        if selection.skill.name not in pinned:
+            auto_injection.append(selection.skill.system_injection)
+    return clean_prompt, selections, "".join(auto_injection), turn_index
+
+
+def _emit_skill_selections(selections: list, write_event) -> None:
+    for selection in selections:
+        write_event({
+            "type": "skill_selected", "skill": selection.skill.name,
+            "reason": selection.reason, "matched_keywords": selection.matched_keywords,
+        })
+
+
+def _finish_skill_turn(selections: list, used_skills: list, turn_index: int, failed: bool = False, write_event=None) -> None:
+    tracker = _skill_tracker()
+    selected = {selection.skill.name: selection for selection in selections}
+    if failed:
+        outcomes = [(selection, "failed") for selection in selections]
+    else:
+        outcomes = [(selected[skill.name], "applied") for skill in used_skills if skill.name in selected]
+    for selection, status in outcomes:
+        event = tracker.log_usage(
+            STATE["memory_session_id"], selection.skill.name, selection.triggered_by,
+            selection.matched_keywords, status, turn_index,
+        )
+        if write_event:
+            write_event({
+                "type": f"skill_{status}", "skill": selection.skill.name,
+                "reason": selection.reason, "matched_keywords": selection.matched_keywords,
+                "event": event,
+            })
 
 
 AGENT_WORKFLOW_PROMPT = """
@@ -161,13 +286,15 @@ AGENT_WORKFLOW_PROMPT = """
 ## Agent Workspace Workflow
 
 When the user asks for project work:
-1. Inspect the project first with `scan_project` or `list_files`.
-2. Read the relevant files before changing anything.
-3. Make the requested code changes with the available tools.
-4. Use `search_files`, `read_many_files`, `replace_in_file`, and `project_tree` when they make codebase work faster and more precise.
-5. If Tavily web tools are enabled, use `web_search` for current internet information and `extract_url` when the user gives a URL or asks for web-backed research. If they are not available, explain that Tavily must be enabled in Settings.
-6. For large code changes, write/edit files with tools instead of printing entire files in chat.
-7. In the final answer, clearly report:
+1. For whole-project purpose, architecture, structure, or module-collaboration questions, use `get_project_overview`; do not answer from one retrieved file.
+2. For a specific implementation question, use `search_codebase`, then `get_related_files` when imports or callers matter.
+3. Use `scan_project` or `list_files` for a raw inventory when the index is unavailable.
+4. Read the relevant files before changing anything.
+5. Make the requested code changes with the available tools.
+6. Use `search_files`, `read_many_files`, `replace_in_file`, and `project_tree` when they make codebase work faster and more precise.
+7. If Tavily web tools are enabled, use `web_search` for current internet information and `extract_url` when the user gives a URL or asks for web-backed research. If they are not available, explain that Tavily must be enabled in Settings.
+8. For large code changes, write/edit files with tools instead of printing entire files in chat.
+9. In the final answer, clearly report:
    - what changed
    - which files were changed
    - any command/test result you ran
@@ -294,6 +421,44 @@ def _persistent_memory_context(query: str) -> str:
         STATE["memory_retrieval_count"] = 0
         STATE["memory_retrieved_facts"] = []
         STATE["memory_context"] = ""
+        return ""
+
+
+def _codebase_rag_context(query: str) -> str:
+    try:
+        retrieval = CodebaseIndex(get_workspace()).retrieve_context(query, top_k=5)
+        hits = retrieval["chunks"]
+        STATE["code_rag_type"] = retrieval["query_type"]
+        STATE["code_rag_hits"] = [
+            {key: hit.get(key) for key in ("file_path", "symbol_name", "symbol_type", "start_line", "end_line", "score")}
+            for hit in hits
+        ]
+        if retrieval["query_type"] == "project_level":
+            overview = retrieval["overview"]
+            sections = ["[Indexed project-level context]", overview["summary"], "\nKey files:"]
+            sections.extend(f"- {item['file_path']}: {item['summary']}" for item in overview["key_files"][:8])
+            sections.append("Answer at project scope and explain how the major files collaborate. Do not reduce the answer to one file.")
+            return _clip_for_context("\n".join(sections), 14_000)
+        if not hits:
+            return ""
+        sections = ["[Relevant indexed code chunks]"]
+        remaining = 12_000
+        for hit in hits:
+            label = f"{hit.get('symbol_type') or 'code'} {hit.get('symbol_name') or ''}".strip()
+            header = f"\n--- {hit['file_path']}:{hit['start_line']}-{hit['end_line']} ({label}) ---\n"
+            block = header + str(hit.get("content") or "")[:max(0, remaining - len(header))]
+            sections.append(block)
+            remaining -= len(block)
+            if remaining <= 0:
+                break
+        if retrieval["related_files"]:
+            sections.append("\n[Graph-related file summaries]")
+            sections.extend(f"- {item['file_path']}: {item['summary']}" for item in retrieval["related_files"])
+        sections.append("Use these chunks for orientation, but read the current file before editing it.")
+        return "\n".join(sections)
+    except Exception:
+        STATE["code_rag_hits"] = []
+        STATE["code_rag_type"] = ""
         return ""
 
 
@@ -667,14 +832,12 @@ def _workspace_snapshot() -> dict:
 
 def _workspace_snapshot_for(workspace: str | Path) -> dict:
     ws = Path(workspace).resolve()
-    ignore = {".git", "__pycache__", "node_modules", ".venv", "venv", ".idea", ".vscode", "dist", "build", ".next"}
+    ignore = {".git", ".agent_memory", "__pycache__", "node_modules", ".venv", "venv", ".idea", ".vscode", "dist", "build", ".next"}
     files = []
     total_size = 0
     ext_set = set()
     try:
-        for p in sorted(ws.rglob("*")):
-            if not p.is_file():
-                continue
+        for p in sorted(iter_workspace_files(ws)):
             rel = p.relative_to(ws)
             if any(part in ignore for part in rel.parts):
                 continue
@@ -1451,34 +1614,29 @@ def _run_agent_loop(api_messages: list[dict]) -> tuple[str, str, list[dict]]:
 
 
 def _run_agent(prompt: str, active_context: dict | None = None) -> dict:
-    triggered = sm.detect_skill_commands(prompt)
-    if triggered:
-        existing = list(STATE["selected_skills"])
-        for skill in triggered:
-            if skill.name not in existing:
-                existing.append(skill.name)
-        STATE["selected_skills"] = existing
-        clean_prompt = sm.strip_commands(prompt) or "Use these skills: " + ", ".join(f"/{s.name}" for s in triggered)
-    else:
-        clean_prompt = prompt
+    clean_prompt, skill_selections, skill_injection, turn_index = _prepare_skill_turn(prompt)
 
     _sync_tool_settings()
     memory_context = _persistent_memory_context(clean_prompt)
-    model_prompt = f"{_build_workspace_context(active_context)}\n\n[User request]\n{clean_prompt}"
+    code_context = _codebase_rag_context(clean_prompt)
+    model_prompt = f"{_build_workspace_context(active_context)}\n\n{code_context}\n\n[User request]\n{clean_prompt}"
     STATE["messages"].append({"role": "user", "content": clean_prompt})
     _save_memory_turn("user", clean_prompt)
-    final_system = _build_final_system_prompt() + (f"\n\n{memory_context}" if memory_context else "")
+    final_system = _build_final_system_prompt() + skill_injection + (f"\n\n{memory_context}" if memory_context else "")
     api_messages = _build_api_messages(final_system)
     api_messages[-1] = {"role": "user", "content": model_prompt}
 
+    failed = False
     try:
         response_text, thinking_text, tools_done = _run_agent_loop(api_messages)
     except Exception as exc:
+        failed = True
         response_text = _format_agent_error(exc)
         thinking_text = ""
         tools_done = []
 
     used_skills = sm.parse_used_skills(response_text)
+    _finish_skill_turn(skill_selections, used_skills, turn_index, failed=failed)
     clean_response = sm.strip_skill_tag(response_text)
     _update_generated_artifact(clean_response, active_context)
     STATE["messages"].append({"role": "assistant", "content": clean_response})
@@ -1501,16 +1659,7 @@ def _chunk_text(text: str, size: int = 90):
 
 
 def _run_agent_stream(prompt: str, write_event, active_context: dict | None = None) -> None:
-    triggered = sm.detect_skill_commands(prompt)
-    if triggered:
-        existing = list(STATE["selected_skills"])
-        for skill in triggered:
-            if skill.name not in existing:
-                existing.append(skill.name)
-        STATE["selected_skills"] = existing
-        clean_prompt = sm.strip_commands(prompt) or "Use these skills: " + ", ".join(f"/{s.name}" for s in triggered)
-    else:
-        clean_prompt = prompt
+    clean_prompt, skill_selections, skill_injection, turn_index = _prepare_skill_turn(prompt)
 
     _sync_tool_settings()
     try:
@@ -1518,15 +1667,19 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
     except Exception as exc:
         write_event({"type": "status", "message": f"Git checkpoint unavailable: {exc}"})
     memory_context = _persistent_memory_context(clean_prompt)
-    model_prompt = f"{_build_workspace_context(active_context)}\n\n[User request]\n{clean_prompt}"
+    code_context = _codebase_rag_context(clean_prompt)
+    model_prompt = f"{_build_workspace_context(active_context)}\n\n{code_context}\n\n[User request]\n{clean_prompt}"
     STATE["messages"].append({"role": "user", "content": clean_prompt})
     _save_memory_turn("user", clean_prompt)
     write_event({"type": "state", "state": _client_state()})
+    _emit_skill_selections(skill_selections, write_event)
     if STATE.get("memory_retrieval_count"):
         write_event({"type": "memory_used", "count": STATE["memory_retrieval_count"]})
+    if STATE.get("code_rag_type"):
+        write_event({"type": "code_rag_used", "query_type": STATE["code_rag_type"], "count": len(STATE["code_rag_hits"]), "chunks": STATE["code_rag_hits"]})
     write_event({"type": "status", "message": "Preparing context..."})
 
-    final_system = _build_final_system_prompt() + (f"\n\n{memory_context}" if memory_context else "")
+    final_system = _build_final_system_prompt() + skill_injection + (f"\n\n{memory_context}" if memory_context else "")
     history = _build_api_messages(final_system)
     history[-1] = {"role": "user", "content": model_prompt}
     response_text = ""
@@ -1534,6 +1687,7 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
     tools_done: list[dict] = []
     auto_continues = 0
 
+    failed = False
     try:
         for iteration in range(MAX_ITERATIONS):
             write_event({
@@ -1584,12 +1738,14 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
             response_text += f"\n\nAgent stopped after {MAX_ITERATIONS} tool iterations."
             write_event({"type": "token", "content": f"\n\nAgent stopped after {MAX_ITERATIONS} tool iterations."})
     except Exception as exc:
+        failed = True
         response_text = _format_agent_error(exc)
         tools_done = []
         thinking_text = ""
         write_event({"type": "error", "message": response_text})
 
     used_skills = sm.parse_used_skills(response_text)
+    _finish_skill_turn(skill_selections, used_skills, turn_index, failed=failed, write_event=write_event)
     clean_response = sm.strip_skill_tag(response_text)
     _update_generated_artifact(clean_response, active_context)
     STATE["messages"].append({"role": "assistant", "content": clean_response})
@@ -1623,6 +1779,7 @@ def _client_state() -> dict:
             }
             for s in sm.all()
         ],
+        "skill_usage": _skill_usage_payload(),
         "settings": {
             "conn_mode": STATE["conn_mode"],
             "model": STATE["model"],
@@ -1638,6 +1795,7 @@ def _client_state() -> dict:
             "tavily_enabled": STATE["tavily_enabled"],
             "tavily_key_set": bool(STATE.get("tavily_api_key")),
             "git_approval_mode": STATE["git_approval_mode"],
+            "smart_skill_confirmation": STATE["smart_skill_confirmation"],
         },
         "memory": {
             "enabled": STATE["memory_enabled"],
@@ -1655,6 +1813,9 @@ def _client_state() -> dict:
             "langchain_error": lc_runtime.error,
         },
         "git": _git_snapshot(),
+        "code_index": CodebaseIndex(get_workspace()).status(),
+        "code_rag_hits": STATE.get("code_rag_hits", []),
+        "code_rag_type": STATE.get("code_rag_type", ""),
         "context_usage": _context_usage_snapshot(),
         "prompts": _prompt_payload(),
         "models": models_payload,
@@ -1674,6 +1835,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/memory":
             _send_json(self, _memory_payload())
             return
+        if path == "/api/index":
+            _send_json(self, CodebaseIndex(get_workspace()).status(check_freshness=True))
+            return
+        if path == "/api/index/overview":
+            index = CodebaseIndex(get_workspace())
+            _send_json(self, {"overview": index.get_project_overview(), "graph": index.dependency_tree()})
+            return
         if path == "/api/projects":
             _send_json(self, {"projects": _project_cards()})
             return
@@ -1688,6 +1856,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/skills/diagnostics":
             _send_json(self, _skills_diagnostics())
+            return
+        if path == "/api/skills/usage":
+            _send_json(self, _skill_usage_payload())
+            return
+        if path == "/api/skill/source":
+            name = parse_qs(parsed.query).get("name", [""])[0]
+            skill = sm.get(name)
+            if not skill:
+                _send_json(self, {"error": "Skill not found"}, 404)
+                return
+            _send_json(self, {"name": skill.name, "path": str(skill.path), "content": skill.path.read_text(encoding="utf-8", errors="replace")})
             return
         if path == "/api/prompt":
             name = parse_qs(parsed.query).get("name", [""])[0]
@@ -1750,6 +1929,16 @@ class Handler(BaseHTTPRequestHandler):
                 ok, msg = _activate_workspace_memory(data.get("path", ""))
                 _send_json(self, {"ok": ok, "message": msg, "workspace": _workspace_snapshot()}, 200 if ok else 400)
                 return
+            if path == "/api/index/rebuild":
+                _send_json(self, CodebaseIndex(get_workspace()).rebuild())
+                return
+            if path == "/api/index/sync":
+                _send_json(self, CodebaseIndex(get_workspace()).sync_incremental())
+                return
+            if path == "/api/index/regenerate-summary":
+                model = STATE["model"] if data.get("use_model") else None
+                _send_json(self, CodebaseIndex(get_workspace()).regenerate_summaries(model=model))
+                return
             if path == "/api/browse":
                 picked = _browse_local_folder(data.get("initial_dir") or str(get_workspace()))
                 if not picked:
@@ -1769,6 +1958,7 @@ class Handler(BaseHTTPRequestHandler):
                     "context_token_budget", "response_token_budget", "auto_continue",
                     "tavily_enabled", "tavily_api_key",
                     "git_approval_mode",
+                    "smart_skill_confirmation",
                 ):
                     if key in data:
                         STATE[key] = data[key]
@@ -1799,8 +1989,28 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/skills":
                 names = data.get("selected_skills", [])
-                STATE["selected_skills"] = [name for name in names if sm.get(name)]
+                tracker = _skill_tracker()
+                valid_names = {name for name in names if sm.get(name)}
+                for skill in sm.all():
+                    current = tracker.skill_modes().get(skill.name, "auto")
+                    if skill.name in valid_names:
+                        tracker.set_mode(skill.name, "pinned")
+                    elif current == "pinned":
+                        tracker.set_mode(skill.name, "auto")
+                STATE["selected_skills"] = sorted(valid_names)
                 _send_json(self, _client_state())
+                return
+            if path == "/api/skills/mode":
+                skill_name = str(data.get("skill_name") or "")
+                if not sm.get(skill_name):
+                    _send_json(self, {"error": "Skill not found"}, 404)
+                    return
+                target_workspace = _known_project_workspace(data.get("workspace_path"))
+                _skill_tracker(target_workspace).set_mode(skill_name, str(data.get("mode") or "auto"))
+                if data.get("workspace_path"):
+                    _send_json(self, {"skill_usage": _skill_usage_payload(target_workspace)})
+                else:
+                    _send_json(self, _client_state())
                 return
             if path == "/api/memory/compact":
                 _compact_memory_if_needed()
@@ -1809,6 +2019,24 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
                 _send_json(self, _client_state())
+                return
+            if path == "/api/skills/disable":
+                skill_name = str(data.get("skill_name") or "")
+                if not sm.get(skill_name):
+                    _send_json(self, {"error": "Skill not found"}, 404)
+                    return
+                _skill_tracker().set_disabled(skill_name, bool(data.get("disabled")))
+                _send_json(self, _skill_usage_payload())
+                return
+            if path == "/api/skill/source":
+                skill = sm.get(str(data.get("name") or ""))
+                if not skill:
+                    _send_json(self, {"error": "Skill not found"}, 404)
+                    return
+                skill.path.write_text(str(data.get("content") or ""), encoding="utf-8")
+                sm.reload()
+                skill_router.invalidate()
+                _send_json(self, {"ok": True, "name": skill.name, "skill_usage": _skill_usage_payload()})
                 return
             if path == "/api/memory/archive":
                 manager = _memory_manager()
@@ -1823,6 +2051,7 @@ class Handler(BaseHTTPRequestHandler):
                     "files": _workspace_snapshot_for(project["workspace_path"])["files"] if project and Path(project["workspace_path"]).is_dir() else [],
                     "facts": manager.list_facts(project_id=int(project_id)) if project_id else [],
                     "preferences": manager.get_user_preferences(int(project_id)) if project_id else {},
+                    "skill_usage": _skill_usage_payload(project["workspace_path"]) if project else {"skills": [], "recent": []},
                 })
                 return
             if path == "/api/memory/archive/file":

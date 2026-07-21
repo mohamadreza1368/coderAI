@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import sys
+import ast
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -25,6 +26,7 @@ class Skill:
     content:     str
     category:    str
     path:        Path
+    triggers:    list[str] | None = None
     disable_model_invocation: bool = False
 
     @property
@@ -40,6 +42,21 @@ class Skill:
             f"{self.content}\n"
             f"---\n"
         )
+
+
+@dataclass
+class SkillSelection:
+    skill: Skill
+    triggered_by: str
+    matched_keywords: list[str]
+
+    @property
+    def reason(self) -> str:
+        if self.triggered_by == "slash_command":
+            return f"explicit /{self.skill.name} command"
+        if self.triggered_by == "pinned":
+            return "selected in the project skills panel"
+        return "matched " + ", ".join(f'"{word}"' for word in self.matched_keywords)
 
 
 _FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
@@ -69,6 +86,11 @@ def _parse_skill_file(path: Path, category: str) -> "Skill | None":
     name        = meta.get("name", path.parent.name)
     description = meta.get("description", "")
     disable     = meta.get("disable-model-invocation", "false").lower() == "true"
+    try:
+        parsed_triggers = ast.literal_eval(meta.get("triggers", "[]"))
+        triggers = [str(item).strip() for item in parsed_triggers] if isinstance(parsed_triggers, (list, tuple)) else []
+    except (ValueError, SyntaxError):
+        triggers = [item.strip() for item in meta.get("triggers", "").strip("[]").split(",") if item.strip()]
 
     return Skill(
         name=name,
@@ -76,6 +98,7 @@ def _parse_skill_file(path: Path, category: str) -> "Skill | None":
         content=content.strip(),
         category=category,
         path=path,
+        triggers=triggers,
         disable_model_invocation=disable,
     )
 
@@ -150,6 +173,36 @@ class SkillsManager:
             cleaned = re.sub(rf"(^|\s)/{re.escape(skill.name)}(?=\s|$)", " ", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
 
+    def select_relevant_skills(self, message: str, pinned: list[str] | None = None, limit: int = 3) -> list[SkillSelection]:
+        """Select skills deterministically and expose why each one matched."""
+        selections: list[SkillSelection] = []
+        seen: set[str] = set()
+        for skill in self.detect_skill_commands(message):
+            selections.append(SkillSelection(skill, "slash_command", [f"/{skill.name}"]))
+            seen.add(skill.name)
+        for name in pinned or []:
+            skill = self.get(name)
+            if skill and skill.name not in seen:
+                selections.append(SkillSelection(skill, "pinned", []))
+                seen.add(skill.name)
+
+        query_words = set(_meaningful_words(message))
+        ranked: list[tuple[int, Skill, list[str]]] = []
+        for skill in self.all():
+            if skill.name in seen or skill.disable_model_invocation:
+                continue
+            name_words = set(_meaningful_words(skill.name.replace("-", " ")))
+            description_words = set(_meaningful_words(skill.description))
+            matches = sorted(query_words & (name_words | description_words))
+            if not matches:
+                continue
+            score = sum(3 if word in name_words else 1 for word in matches)
+            ranked.append((score, skill, matches[:6]))
+        ranked.sort(key=lambda item: (-item[0], item[1].name))
+        for _, skill, matches in ranked[:max(0, int(limit) - len(selections))]:
+            selections.append(SkillSelection(skill, "keyword_match", matches))
+        return selections[:limit]
+
     # Auto-select prompt.
     def build_auto_select_prompt(self) -> str:
         """
@@ -209,6 +262,17 @@ You have access to the following skills. **Automatically select the most relevan
 
 
 _instance: "SkillsManager | None" = None
+
+
+_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "code", "for", "from", "in", "is", "it",
+    "of", "on", "or", "the", "this", "to", "tool", "use", "using", "with", "you", "your",
+}
+
+
+def _meaningful_words(text: str) -> list[str]:
+    words = re.findall(r"[^\W_]{2,}", str(text or "").lower(), flags=re.UNICODE)
+    return [word for word in words if word not in _STOP_WORDS]
 
 
 def get_skills_manager() -> SkillsManager:

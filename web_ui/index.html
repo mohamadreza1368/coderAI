@@ -107,8 +107,42 @@
         </nav>
 
         <section id="filesTab" class="tab-page active">
-          <input id="fileSearch" class="search" placeholder="Filter files...">
-          <div id="fileList" class="file-list"></div>
+          <nav class="file-view-tabs" aria-label="Codebase files and index">
+            <button type="button" class="file-view-tab active" data-file-view="browser">Files</button>
+            <button type="button" class="file-view-tab" data-file-view="index">Index</button>
+          </nav>
+          <div id="fileBrowserView" class="file-view active">
+            <input id="fileSearch" class="search" placeholder="Filter files...">
+            <div id="fileList" class="file-list"></div>
+          </div>
+          <div id="codeIndexView" class="file-view code-index-view">
+            <div class="index-heading"><div><strong>Codebase index</strong><span>Hybrid keyword and semantic retrieval</span></div><i id="indexStatusDot"></i></div>
+            <div class="index-stats">
+              <div><strong id="indexFileCount">0</strong><span>Files</span></div>
+              <div><strong id="indexSymbolCount">0</strong><span>Symbols</span></div>
+              <div><strong id="indexChunkCount">0</strong><span>Chunks</span></div>
+            </div>
+            <dl class="index-details">
+              <div><dt>Status</dt><dd id="indexFreshness">Not indexed</dd></div>
+              <div><dt>Last indexed</dt><dd id="indexLastRun">Never</dd></div>
+              <div><dt>Embeddings</dt><dd id="indexEmbeddingModel">nomic-embed-text</dd></div>
+              <div><dt>Vector store</dt><dd id="indexVectorBackend">Local</dd></div>
+            </dl>
+            <div id="indexError" class="index-error"></div>
+            <section class="index-intelligence">
+              <div class="index-section-head"><div><strong>Project overview</strong><span id="indexGraphStats">No dependency graph</span></div><button id="regenerateProjectSummary" type="button" class="ghost">Regenerate</button></div>
+              <div id="indexProjectSummary" class="index-summary">Build the index to generate a project-level architecture summary.</div>
+              <div id="indexEntryPoints" class="index-entry-points"></div>
+            </section>
+            <section class="index-intelligence">
+              <div class="index-section-head"><div><strong>Dependency graph</strong><span>Resolved imports and calls</span></div></div>
+              <div id="indexDependencyTree" class="index-dependency-tree">No graph data yet.</div>
+            </section>
+            <div class="index-actions">
+              <button id="syncCodeIndex" type="button" class="ghost">Sync changes</button>
+              <button id="rebuildCodeIndex" type="button" class="primary">Re-index workspace</button>
+            </div>
+          </div>
         </section>
 
         <section id="skillsTab" class="tab-page">
@@ -119,7 +153,11 @@
             </button>
             <span id="skillsStatus">Not tested</span>
           </div>
+          <div class="memory-section-head skill-list-heading"><strong>Available</strong><span>Project usage</span></div>
+          <div id="skillsRoutingNotice" class="skills-routing-notice"></div>
           <div id="skillsList" class="skills-list"></div>
+          <div class="memory-section-head skill-list-heading"><strong>Recent usage</strong><span>Selection lifecycle</span></div>
+          <div id="skillsRecentUsage" class="skills-recent-usage"></div>
         </section>
 
         <section id="promptsTab" class="tab-page prompts">
@@ -221,6 +259,12 @@
             <label><input id="tavilyEnabled" type="checkbox"> Tavily web search</label>
             <label id="tavilyKeyRow">Tavily API Key <input id="tavilyApiKey" type="password" placeholder="tvly-..."></label>
             <span id="tavilyStatus">Tavily is disabled</span>
+          </div>
+
+          <div class="settings-card">
+            <span class="settings-card-title">Skill routing</span>
+            <label><input id="smartSkillConfirmation" type="checkbox"> Smart skill confirmation</label>
+            <span class="settings-note">Uses a small extra model call only when keyword and semantic routing are ambiguous.</span>
           </div>
 
           <div class="settings-card">
@@ -367,7 +411,7 @@
             </section>
             <section id="projectFilesPanel" class="project-page"><h2>Files</h2><div id="projectFileGrid" class="project-file-grid"></div></section>
             <section id="projectMemoryPanel" class="project-page"><h2>Project Memory</h2><div id="projectMemoryContent" class="project-memory-content"></div></section>
-            <section id="projectSkillsPanel" class="project-page"><h2>Skills</h2><div id="projectSkillsContent" class="project-skills-content"></div></section>
+            <section id="projectSkillsPanel" class="project-page"><h2>Skills</h2><div id="projectSkillsRoutingNotice" class="skills-routing-notice"></div><div id="projectSkillsContent" class="project-skills-content"></div><div id="projectSkillDetail" class="project-skill-detail"></div></section>
             <section id="projectSettingsPanel" class="project-page">
               <h2>Project Settings</h2>
               <div class="project-setting-row"><span>Workspace path</span><code id="projectSettingsPath"></code></div>

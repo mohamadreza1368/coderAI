@@ -33,6 +33,7 @@ Output/
 # Local runtime state
 .agents/
 .codex/
+.agent_memory/
 agent_workspace/*
 !agent_workspace/.gitkeep
 
