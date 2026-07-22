@@ -112,7 +112,9 @@ Use `Custom API` in the top bar when you want an OpenAI-compatible endpoint. The
 
 - API Base URL
 - API Key
-- Model selection
+- Model name or deployment ID
+
+The Custom API model is stored independently from the selected Ollama model. Enter the exact identifier expected by the provider, such as `gpt-4o-mini`, `openai/gpt-4.1`, or a private deployment name. CoderAI sends this value as the `model` field in both regular and streaming OpenAI-compatible requests. If the endpoint does not expose `/models`, the manually entered model remains available and is not replaced.
 
 ## Tavily Web Search
 

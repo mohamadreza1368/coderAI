@@ -133,6 +133,7 @@ STATE = {
     "enable_thinking": False,
     "custom_api_url": "https://api.openai.com/v1",
     "custom_api_key": "",
+    "custom_api_model": os.getenv("CUSTOM_API_MODEL", "gpt-4o-mini"),
     "selected_prompt": DEFAULT_PROMPT_NAME,
     "system_prompt": DEFAULT_ACTIVE_PROMPT,
     "model_user_selected": False,
@@ -162,6 +163,12 @@ sm = get_skills_manager()
 pm = get_prompt_manager()
 lc_runtime = LangChainRuntime()
 skill_router = SkillRouter()
+
+
+def _active_model() -> str:
+    if STATE.get("conn_mode") == MODE_CUSTOM:
+        return str(STATE.get("custom_api_model") or "gpt-4o-mini").strip()
+    return str(STATE.get("model") or "llama3").strip()
 
 
 def _skill_tracker(workspace: str | Path | None = None) -> SkillTracker:
@@ -602,7 +609,7 @@ def _clip_for_context(text: str, limit: int) -> str:
 def _estimate_tokens_for_messages(messages: list[dict]) -> int:
     if _litellm_token_counter:
         try:
-            return int(_litellm_token_counter(model=STATE.get("model") or "gpt-4o-mini", messages=messages))
+            return int(_litellm_token_counter(model=_active_model(), messages=messages))
         except Exception:
             pass
     chars = sum(len(str(message.get("content", ""))) + 24 for message in messages)
@@ -675,7 +682,7 @@ def _context_usage_snapshot() -> dict:
     messages = _build_api_messages(final_system, compact=False)
     input_tokens = _fast_tokens_for_messages(messages)
     configured_budget = max(4_000, int(STATE.get("context_token_budget") or DEFAULT_CONTEXT_TOKEN_BUDGET))
-    context_window, source = _model_context_window(STATE.get("model", ""))
+    context_window, source = _model_context_window(_active_model())
     effective_window = max(1, min(context_window, configured_budget))
     response_budget = max(512, int(STATE.get("response_token_budget") or DEFAULT_RESPONSE_TOKEN_BUDGET))
     remaining = max(0, effective_window - input_tokens)
@@ -1023,12 +1030,17 @@ def _available_models() -> dict:
             raw_models = data.get("data", []) if isinstance(data, dict) else []
             names = [m.get("id") or m.get("name") for m in raw_models if isinstance(m, dict)]
         names = [name for name in names if name]
+        if conn_mode == MODE_CUSTOM:
+            selected = _active_model()
+            if selected and selected not in names:
+                names.insert(0, selected)
+            return {"models": names, "selected_model": selected, "error": None}
         preferred = next((name for name in names if not name.endswith(":cloud")), names[0] if names else STATE["model"])
         if names and (STATE["model"] not in names or (not STATE["model_user_selected"] and STATE["model"].endswith(":cloud"))):
             STATE["model"] = preferred
         return {"models": names, "selected_model": STATE["model"], "error": None}
     except Exception as exc:
-        return {"models": [], "selected_model": STATE["model"], "error": str(exc)}
+        return {"models": [_active_model()], "selected_model": _active_model(), "error": str(exc)}
 
 
 def _prompt_payload() -> dict:
@@ -1132,7 +1144,7 @@ def _use_langchain_streaming_runtime() -> bool:
 def _runtime_settings() -> RuntimeSettings:
     return RuntimeSettings(
         conn_mode=STATE["conn_mode"],
-        model=STATE["model"],
+        model=_active_model(),
         temperature=float(STATE["temperature"]),
         enable_thinking=bool(STATE["enable_thinking"]),
         custom_api_url=STATE["custom_api_url"],
@@ -1152,7 +1164,7 @@ def _call_model(history: list[dict]) -> dict:
         data = _post_json(
             "http://127.0.0.1:11434/api/chat",
             {
-                "model": STATE["model"],
+                "model": _active_model(),
                 "messages": history,
                 "tools": _active_tool_schemas(),
                 "think": bool(STATE["enable_thinking"]),
@@ -1174,7 +1186,7 @@ def _call_model(history: list[dict]) -> dict:
     data = _post_json(
         f"{STATE['custom_api_url'].rstrip('/')}/chat/completions",
         {
-            "model": STATE["model"],
+            "model": _active_model(),
             "messages": history,
             "tools": _active_tool_schemas(),
             "temperature": float(STATE["temperature"]),
@@ -1228,7 +1240,7 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
         for event in _post_json_stream(
             "http://127.0.0.1:11434/api/chat",
             {
-                "model": STATE["model"],
+                "model": _active_model(),
                 "messages": history,
                 "tools": _active_tool_schemas(),
                 "think": bool(STATE["enable_thinking"]),
@@ -1263,7 +1275,7 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
     for event in _post_json_stream(
         f"{STATE['custom_api_url'].rstrip('/')}/chat/completions",
         {
-            "model": STATE["model"],
+            "model": _active_model(),
             "messages": history,
             "tools": _active_tool_schemas(),
             "temperature": float(STATE["temperature"]),
@@ -1782,7 +1794,9 @@ def _client_state() -> dict:
         "skill_usage": _skill_usage_payload(),
         "settings": {
             "conn_mode": STATE["conn_mode"],
-            "model": STATE["model"],
+            "model": _active_model(),
+            "ollama_model": STATE["model"],
+            "custom_api_model": STATE["custom_api_model"],
             "temperature": STATE["temperature"],
             "enable_thinking": STATE["enable_thinking"],
             "custom_api_url": STATE["custom_api_url"],
@@ -1936,7 +1950,7 @@ class Handler(BaseHTTPRequestHandler):
                 _send_json(self, CodebaseIndex(get_workspace()).sync_incremental())
                 return
             if path == "/api/index/regenerate-summary":
-                model = STATE["model"] if data.get("use_model") else None
+                model = _active_model() if data.get("use_model") else None
                 _send_json(self, CodebaseIndex(get_workspace()).regenerate_summaries(model=model))
                 return
             if path == "/api/browse":
@@ -1952,9 +1966,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             if path == "/api/settings":
+                requested_mode = data.get("conn_mode", STATE["conn_mode"])
                 for key in (
-                    "conn_mode", "model", "temperature", "enable_thinking",
-                    "custom_api_url", "custom_api_key", "memory_enabled",
+                    "conn_mode", "temperature", "enable_thinking",
+                    "custom_api_url", "custom_api_key", "custom_api_model", "memory_enabled",
                     "context_token_budget", "response_token_budget", "auto_continue",
                     "tavily_enabled", "tavily_api_key",
                     "git_approval_mode",
@@ -1962,6 +1977,11 @@ class Handler(BaseHTTPRequestHandler):
                 ):
                     if key in data:
                         STATE[key] = data[key]
+                if requested_mode == MODE_LOCAL and "model" in data:
+                    STATE["model"] = str(data.get("model") or STATE["model"]).strip()
+                elif requested_mode == MODE_CUSTOM and not str(STATE.get("custom_api_model") or "").strip():
+                    STATE["custom_api_model"] = str(data.get("model") or "gpt-4o-mini").strip()
+                STATE["custom_api_model"] = str(STATE.get("custom_api_model") or "gpt-4o-mini").strip()
                 if "tavily_api_key" in data:
                     STATE["tavily_api_key"] = str(data.get("tavily_api_key") or "").strip()
                 if not STATE.get("tavily_enabled"):
@@ -1970,7 +1990,7 @@ class Handler(BaseHTTPRequestHandler):
                 for key in ("context_token_budget", "response_token_budget"):
                     if key in STATE:
                         STATE[key] = max(512, int(STATE[key]))
-                if "model" in data:
+                if requested_mode == MODE_LOCAL and "model" in data:
                     STATE["model_user_selected"] = True
                 _send_json(self, _client_state())
                 return

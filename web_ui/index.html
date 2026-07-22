@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Ollama Agentic Workspace</title>
-  <link rel="stylesheet" href="/styles.css?v=enterprise-ide-2">
+  <link rel="stylesheet" href="/styles.css?v=simplified-workflow-2">
 </head>
 <body>
   <div class="app-shell">
@@ -19,18 +19,15 @@
         </div>
       </div>
 
-      <div class="signal-rail" title="Pipeline status">
-        <span class="signal is-workspace"><span class="signal-dot"></span><span class="signal-label">Workspace</span></span>
-        <span class="signal-sep"></span>
-        <span class="signal is-editor"><span class="signal-dot"></span><span class="signal-label">Editor</span></span>
-        <span class="signal-sep"></span>
-        <span class="signal is-agent"><span class="signal-dot"></span><span class="signal-label">Agent</span></span>
+      <div class="signal-rail" title="Workspace and agent status">
+        <span class="signal is-workspace"><span class="signal-dot"></span><span class="signal-label">Workspace ready</span></span>
+        <span class="signal is-agent"><span class="signal-dot"></span><span class="signal-label">Agent idle</span></span>
       </div>
 
       <div class="top-actions">
         <select id="connMode" title="Connection mode">
-          <option>🖥️ Local Ollama</option>
-          <option>🔑 Custom API</option>
+          <option value="🖥️ Local Ollama">Local Ollama</option>
+          <option value="🔑 Custom API">Custom API</option>
         </select>
         <select id="modelSelect" title="Model"></select>
         <button id="refreshModels" type="button" class="ghost" title="Refresh Ollama models">
@@ -41,12 +38,17 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/></svg>
           Clear
         </button>
+        <button id="openCommandPalette" type="button" class="ghost" title="Open command palette (Ctrl+K)" aria-label="Open command palette">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+          Commands
+        </button>
       </div>
     </header>
 
     <section id="customApiPanel" class="custom-api-panel">
       <label>API Base URL <input id="topCustomApiUrl" placeholder="https://api.openai.com/v1"></label>
       <label>API Key <input id="topCustomApiKey" type="password" placeholder="sk-..."></label>
+      <label>Model name <input id="topCustomApiModel" placeholder="gpt-4o-mini"></label>
       <button id="saveTopCustomApi" type="button" class="primary">Save API</button>
     </section>
 
@@ -55,7 +57,7 @@
         <button class="activity-btn active" type="button" title="Projects" aria-label="Projects">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
         </button>
-        <button class="activity-btn" type="button" title="Search" aria-label="Search">
+        <button class="activity-btn" type="button" title="Files" aria-label="Files">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
         </button>
         <button class="activity-btn" type="button" title="Agent" aria-label="Agent">
@@ -63,9 +65,6 @@
         </button>
         <button class="activity-btn" type="button" title="Settings" aria-label="Settings">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
-        </button>
-        <button class="activity-btn" type="button" title="Memory archive" aria-label="Memory">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
         </button>
       </nav>
 
@@ -99,11 +98,8 @@
           <div><strong id="typeCount">0</strong><span>types</span></div>
         </section>
 
-        <nav class="tabs">
+        <nav class="tabs workspace-tabs" aria-label="Workspace panel">
           <button class="tab active" data-tab="files">Files</button>
-          <button class="tab" data-tab="skills">Skills</button>
-          <button class="tab" data-tab="prompts">Prompts</button>
-          <button class="tab" data-tab="settings">Settings</button>
         </nav>
 
         <section id="filesTab" class="tab-page active">
@@ -125,10 +121,15 @@
             <dl class="index-details">
               <div><dt>Status</dt><dd id="indexFreshness">Not indexed</dd></div>
               <div><dt>Last indexed</dt><dd id="indexLastRun">Never</dd></div>
-              <div><dt>Embeddings</dt><dd id="indexEmbeddingModel">nomic-embed-text</dd></div>
-              <div><dt>Vector store</dt><dd id="indexVectorBackend">Local</dd></div>
             </dl>
             <div id="indexError" class="index-error"></div>
+            <details class="index-advanced">
+              <summary>Index details</summary>
+              <dl class="index-details">
+                <div><dt>Embeddings</dt><dd id="indexEmbeddingModel">nomic-embed-text</dd></div>
+                <div><dt>Storage mode</dt><dd id="indexVectorBackend">Local fallback</dd></div>
+              </dl>
+            </details>
             <section class="index-intelligence">
               <div class="index-section-head"><div><strong>Project overview</strong><span id="indexGraphStats">No dependency graph</span></div><button id="regenerateProjectSummary" type="button" class="ghost">Regenerate</button></div>
               <div id="indexProjectSummary" class="index-summary">Build the index to generate a project-level architecture summary.</div>
@@ -197,17 +198,17 @@
             </section>
             <section class="memory-section">
               <div class="memory-section-head"><strong>Project facts</strong><span>Retrieved by relevance</span></div>
-              <div class="memory-add-row">
-                <input id="newMemoryFact" placeholder="Add a durable project fact...">
+              <div class="memory-form">
+                <label>Durable project fact<input id="newMemoryFact" placeholder="Example: API routes use FastAPI"></label>
                 <button id="addMemoryFact" type="button" class="primary">Add</button>
               </div>
               <div id="memoryFactsList" class="memory-list"></div>
             </section>
             <section class="memory-section">
               <div class="memory-section-head"><strong>User preferences</strong><span>Always included</span></div>
-              <div class="memory-preference-row">
-                <input id="newPreferenceKey" placeholder="Preference name">
-                <input id="newPreferenceValue" placeholder="Preference value">
+              <div class="memory-form memory-preference-form">
+                <label>Preference name<input id="newPreferenceKey" placeholder="Example: test_framework"></label>
+                <label>Preference value<input id="newPreferenceValue" placeholder="Example: pytest"></label>
                 <button id="addMemoryPreference" type="button" class="primary">Add</button>
               </div>
               <div id="memoryPreferencesList" class="memory-list"></div>
@@ -216,7 +217,11 @@
         </section>
 
         <section id="settingsTab" class="tab-page settings">
-          <div class="settings-card">
+          <div class="settings-intro">
+            <strong>Settings</strong>
+            <span>Daily controls are shown first. Technical options stay in Advanced.</span>
+          </div>
+          <div class="settings-card settings-basic">
             <span class="settings-card-title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
               Model &amp; runtime
@@ -226,32 +231,7 @@
             <label><input id="autoContinue" type="checkbox"> Auto-continue incomplete generations</label>
           </div>
 
-          <div class="settings-card">
-            <span class="settings-card-title">Git checkpoints</span>
-            <label><input id="gitApprovalMode" type="checkbox" checked> Review every file diff before writing</label>
-            <span class="settings-note">Trusted mode writes and commits agent changes automatically.</span>
-          </div>
-
-          <div class="settings-card">
-            <span class="settings-card-title">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/></svg>
-              Context &amp; memory
-            </span>
-            <div class="field-row">
-              <label>Context tokens <input id="contextTokenBudget" type="number" min="4000" max="200000" step="1000" value="24000"></label>
-              <label>Response tokens <input id="responseTokenBudget" type="number" min="512" max="64000" step="512" value="8192"></label>
-            </div>
-            <label><input id="memoryEnabled" type="checkbox"> Persistent workspace memory</label>
-            <div class="memory-box">
-              <span id="memoryStats">Memory: loading...</span>
-              <button id="compactMemory" type="button" class="ghost">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v4"/><path d="M16 3v4"/><path d="M4 11h16"/><rect x="4" y="5" width="16" height="16" rx="2"/></svg>
-                Compact now
-              </button>
-            </div>
-          </div>
-
-          <div class="settings-card">
+          <div class="settings-card settings-basic">
             <span class="settings-card-title">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
               Web search
@@ -261,20 +241,49 @@
             <span id="tavilyStatus">Tavily is disabled</span>
           </div>
 
-          <div class="settings-card">
-            <span class="settings-card-title">Skill routing</span>
-            <label><input id="smartSkillConfirmation" type="checkbox"> Smart skill confirmation</label>
-            <span class="settings-note">Uses a small extra model call only when keyword and semantic routing are ambiguous.</span>
-          </div>
+          <details class="advanced-settings">
+            <summary>Advanced settings</summary>
+            <div class="settings-card">
+              <span class="settings-card-title">Git checkpoints</span>
+              <label><input id="gitApprovalMode" type="checkbox" checked> Review every file diff before writing</label>
+              <span class="settings-note">Agent writes stay in review mode unless you explicitly trust automatic changes.</span>
+            </div>
 
-          <div class="settings-card">
-            <span class="settings-card-title">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-              Custom API
-            </span>
-            <label>Custom API URL <input id="customApiUrl" placeholder="https://api.openai.com/v1"></label>
-            <label>Custom API Key <input id="customApiKey" type="password" placeholder="optional"></label>
-          </div>
+            <div class="settings-card">
+              <span class="settings-card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/></svg>
+                Context &amp; memory
+              </span>
+              <div class="field-row">
+                <label>Context tokens <input id="contextTokenBudget" type="number" min="4000" max="200000" step="1000" value="24000"></label>
+                <label>Response tokens <input id="responseTokenBudget" type="number" min="512" max="64000" step="512" value="8192"></label>
+              </div>
+              <label><input id="memoryEnabled" type="checkbox"> Persistent workspace memory</label>
+              <div class="memory-box">
+                <span id="memoryStats">Memory: loading...</span>
+                <button id="compactMemory" type="button" class="ghost">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v4"/><path d="M16 3v4"/><path d="M4 11h16"/><rect x="4" y="5" width="16" height="16" rx="2"/></svg>
+                  Compact now
+                </button>
+              </div>
+            </div>
+
+            <div class="settings-card">
+              <span class="settings-card-title">Skill routing</span>
+              <label><input id="smartSkillConfirmation" type="checkbox"> Smart skill confirmation</label>
+              <span class="settings-note">Uses a small extra model call only when keyword and semantic routing are ambiguous.</span>
+            </div>
+
+            <div class="settings-card">
+              <span class="settings-card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                Custom API
+              </span>
+              <label>Custom API URL <input id="customApiUrl" placeholder="https://api.openai.com/v1"></label>
+              <label>Custom API Key <input id="customApiKey" type="password" placeholder="optional"></label>
+              <label>Custom API Model <input id="customApiModel" placeholder="gpt-4o-mini"></label>
+            </div>
+          </details>
 
           <button id="saveSettings" type="button" class="primary">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>
@@ -391,10 +400,6 @@
           <nav class="project-tabs" aria-label="Project sections">
             <button class="project-tab active" data-project-tab="overview">Overview</button>
             <button class="project-tab" data-project-tab="sessions">Sessions</button>
-            <button class="project-tab" data-project-tab="files">Files</button>
-            <button class="project-tab" data-project-tab="memory">Memory</button>
-            <button class="project-tab" data-project-tab="skills">Skills</button>
-            <button class="project-tab" data-project-tab="settings">Settings</button>
           </nav>
           <div class="project-home-content">
             <section id="projectOverviewPanel" class="project-page active">
@@ -424,11 +429,24 @@
     </div>
 
     <footer class="statusbar">
-      <span>main</span>
-      <span>UTF-8</span>
-      <span id="statusModel">Model ready</span>
-      <span>Agent workspace</span>
+      <span id="statusBranch">Git: not connected</span>
+      <span id="statusIndex">Index: not built</span>
+      <span id="statusModel">Model: loading</span>
+      <span id="statusContext">Context: 0%</span>
     </footer>
+  </div>
+
+  <div id="commandPalette" class="command-palette" hidden>
+    <div class="command-palette-backdrop" data-command-close></div>
+    <section class="command-palette-panel" role="dialog" aria-modal="true" aria-labelledby="commandPaletteTitle">
+      <header class="command-palette-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+        <input id="commandSearch" autocomplete="off" placeholder="Search commands or type /skill, /memory, /prompt..." aria-label="Search commands">
+        <kbd>Esc</kbd>
+      </header>
+      <div class="command-palette-meta"><strong id="commandPaletteTitle">Go to</strong><span>Ctrl+K</span></div>
+      <div id="commandList" class="command-list" role="listbox"></div>
+    </section>
   </div>
 
   <!-- Execution Approval Modal -->
@@ -468,6 +486,6 @@
       <span id="loadingText">Preparing...</span>
     </div>
   </div>
-  <script src="/app.js?v=enterprise-ide-2"></script>
+  <script src="/app.js?v=simplified-workflow-2"></script>
 </body>
 </html>

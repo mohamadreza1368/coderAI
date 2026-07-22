@@ -10,6 +10,8 @@ const state = {
   pendingPush: null,
   projectCards: [],
   projectArchive: null,
+  initialProjectsShown: false,
+  commandSelection: 0,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -236,6 +238,7 @@ function syncEditorHighlightScroll() {
 }
 
 function activateTab(name) {
+  document.body.classList.toggle("utility-mode", name !== "files");
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   document.querySelectorAll(".tab-page").forEach((p) => p.classList.remove("active"));
   $(`${name}Tab`)?.classList.add("active");
@@ -252,6 +255,11 @@ function renderState(data) {
   const ws = data.workspace;
   $("workspacePath").textContent = ws.path;
   if ($("statusModel")) $("statusModel").textContent = data.settings.model || "Model ready";
+  const gitBranch = data.git?.status?.branch || data.git?.branch || "not connected";
+  $("statusBranch").textContent = `Git: ${gitBranch}`;
+  const index = data.code_index || {};
+  $("statusIndex").textContent = !index.files ? "Index: not built" : index.up_to_date === false ? "Index: changes detected" : `Index: ${index.files} files`;
+  $("statusModel").textContent = `Model: ${data.settings.model || "not selected"}`;
   $("workspaceInput").value = ws.path;
   $("fileCount").textContent = ws.stats.files;
   $("totalKb").textContent = `${ws.stats.kb}KB`;
@@ -276,9 +284,12 @@ function renderState(data) {
     ? `${memory.persistent.retrieval_count} memory fact(s) used`
     : "";
   state.contextUsage = data.context_usage || {};
+  $("statusContext").textContent = `Context: ${Number(state.contextUsage.percent || 0)}%`;
   updateTokenUsage();
   $("customApiUrl").value = data.settings.custom_api_url || "https://api.openai.com/v1";
   $("topCustomApiUrl").value = data.settings.custom_api_url || "https://api.openai.com/v1";
+  $("customApiModel").value = data.settings.custom_api_model || "gpt-4o-mini";
+  $("topCustomApiModel").value = data.settings.custom_api_model || "gpt-4o-mini";
   $("customApiKey").value = "";
   $("topCustomApiKey").value = "";
   updateCustomApiPanel();
@@ -295,6 +306,96 @@ function renderState(data) {
     renderGeneratedCodeFromMessages();
   }
   if (state.workspaceLocked) setWorkspaceLocked(true);
+}
+
+function friendlyErrorMessage(message) {
+  const text = String(message || "");
+  const lower = text.toLowerCase();
+  if (lower.includes("chromadb") || lower.includes("chroma")) {
+    return "Advanced semantic memory is unavailable, so the app is using the local fallback search mode.";
+  }
+  if (lower.includes("sqlite") && lower.includes("fallback")) {
+    return "Local fallback search is active. You can keep working normally; semantic search may be less precise.";
+  }
+  if (lower.includes("tavily")) {
+    return "Web search is not ready. Enable it from Settings when you need web results.";
+  }
+  if (lower.includes("module not found") || lower.includes("modulenotfounderror")) {
+    return "An optional advanced component is missing. The app switched to a simpler local mode.";
+  }
+  if (lower.includes("timed out") || lower.includes("timeout")) {
+    return "The selected model took too long to respond. Check that it is running, then try again.";
+  }
+  if (lower.includes("connection refused") || lower.includes("failed to fetch") || lower.includes("not reachable")) {
+    return "The selected model service is unavailable. Check the connection in Settings and try again.";
+  }
+  if (lower.includes("traceback") || lower.includes("error:") || lower.includes("exception")) {
+    return "The operation could not be completed. Check Advanced Settings or the application logs for technical details.";
+  }
+  return text || "The operation could not be completed.";
+}
+
+const commandDefinitions = [
+  { id: "projects", icon: "P", title: "Projects and sessions", detail: "Browse local workspaces and resume previous sessions", keywords: "/session archive history", shortcut: "" },
+  { id: "files", icon: "F", title: "Project files", detail: "Open the workspace file browser", keywords: "/file source tree", shortcut: "" },
+  { id: "index", icon: "I", title: "Codebase intelligence", detail: "View project overview, index status, and dependency graph", keywords: "/index rag graph architecture", shortcut: "" },
+  { id: "agent", icon: "A", title: "Agent chat", detail: "Focus the request composer", keywords: "/agent chat prompt", shortcut: "" },
+  { id: "skills", icon: "S", title: "Skills", detail: "Choose skills and inspect usage", keywords: "/skill capability", shortcut: "" },
+  { id: "prompts", icon: ">_", title: "System prompts", detail: "Select or edit the active system prompt", keywords: "/prompt system instruction", shortcut: "" },
+  { id: "memory", icon: "M", title: "Memory", detail: "Browse sessions, project facts, and preferences", keywords: "/memory fact preference", shortcut: "" },
+  { id: "git", icon: "G", title: "Git history", detail: "Review repository status, commits, clone, and push", keywords: "/git diff commit history", shortcut: "" },
+  { id: "settings", icon: "CFG", title: "Settings", detail: "Model, runtime, and web search controls", keywords: "/settings model tavily", shortcut: "" },
+  { id: "advanced", icon: "...", title: "Advanced settings", detail: "Context, memory, Git review, skills, and Custom API", keywords: "/advanced context api embedding", shortcut: "" },
+];
+
+function filteredCommands() {
+  const query = $("commandSearch").value.trim().toLowerCase();
+  if (!query) return commandDefinitions;
+  return commandDefinitions.filter((command) => `${command.title} ${command.detail} ${command.keywords}`.toLowerCase().includes(query));
+}
+
+function renderCommandPalette() {
+  const commands = filteredCommands();
+  state.commandSelection = Math.max(0, Math.min(state.commandSelection, commands.length - 1));
+  $("commandList").innerHTML = commands.map((command, index) => `
+    <button type="button" class="command-item ${index === state.commandSelection ? "selected" : ""}" data-command-id="${command.id}" role="option" aria-selected="${index === state.commandSelection}">
+      <span class="command-item-icon">${escapeHtml(command.icon)}</span>
+      <span><strong>${escapeHtml(command.title)}</strong><span>${escapeHtml(command.detail)}</span></span>
+      ${command.shortcut ? `<kbd>${escapeHtml(command.shortcut)}</kbd>` : ""}
+    </button>
+  `).join("") || `<div class="command-empty">No matching commands</div>`;
+  document.querySelectorAll(".command-item").forEach((button) => button.addEventListener("click", () => runCommand(button.dataset.commandId)));
+}
+
+function openCommandPalette() {
+  $("commandPalette").hidden = false;
+  $("commandSearch").value = "";
+  state.commandSelection = 0;
+  renderCommandPalette();
+  $("commandSearch").focus();
+}
+
+function closeCommandPalette() {
+  $("commandPalette").hidden = true;
+}
+
+async function runCommand(id) {
+  closeCommandPalette();
+  if (id === "projects") return showProjects();
+  showWorkbench();
+  if (id === "files") { setActiveActivity("Files"); activateTab("files"); return $("fileSearch").focus(); }
+  if (id === "index") { setActiveActivity("Files"); activateTab("files"); return activateFileView("index"); }
+  if (id === "agent") { activateTab("files"); setActiveActivity("Agent"); return $("promptInput").focus(); }
+  if (id === "skills") return activateTab("skills");
+  if (id === "prompts") return activateTab("prompts");
+  if (id === "memory") return activateTab("memory");
+  if (id === "git") { activateTab("files"); return showEditorView("git"); }
+  if (id === "settings" || id === "advanced") {
+    setActiveActivity("Settings");
+    activateTab("settings");
+    const advanced = document.querySelector(".advanced-settings");
+    if (id === "advanced") advanced.open = true;
+  }
 }
 
 function formatRelativeTime(timestamp) {
@@ -403,6 +504,7 @@ async function openProjectInEditor(startSession = false) {
   if (!result.ok) throw new Error(result.message || "Could not open project");
   renderState(await api("/api/state"));
   if (startSession) renderState(await api("/api/clear", { method: "POST", body: JSON.stringify({}) }));
+  activateTab("files");
   showWorkbench(); setActiveActivity("Agent"); $("promptInput").focus();
 }
 
@@ -1011,6 +1113,8 @@ function setWorkspaceLocked(isLocked) {
 function setLoading(isLoading, text = "Working...", lockWorkspace = state.workspaceLocked) {
   document.body.classList.toggle("loading", isLoading);
   $("loadingText").textContent = text;
+  const agentLabel = document.querySelector(".signal.is-agent .signal-label");
+  if (agentLabel) agentLabel.textContent = isLoading ? "Agent working" : "Agent idle";
   setWorkspaceLocked(isLoading ? lockWorkspace : false);
 }
 
@@ -1087,15 +1191,12 @@ function renderCodeIndex(index = {}) {
   $("indexFreshness").textContent = !hasIndex ? "Not indexed" : fresh === false ? "Changes detected" : fresh === true ? "Up to date" : "Ready";
   $("indexLastRun").textContent = index.last_indexed ? formatRelativeTime(index.last_indexed) : "Never";
   $("indexEmbeddingModel").textContent = index.embedding_model || "nomic-embed-text";
-  $("indexVectorBackend").textContent = index.vector_backend || "SQLite fallback";
+  $("indexVectorBackend").textContent = index.vector_backend === "chromadb" ? "Advanced semantic search" : "Local fallback search";
   $("indexStatusDot").className = hasIndex && fresh !== false ? "ready" : hasIndex ? "stale" : "";
   const embeddingError = index.embedding_error || "";
-  const vectorError = index.vector_error || "";
   const notice = embeddingError
-    ? `Keyword search is active; semantic embeddings are unavailable: ${embeddingError}`
-    : vectorError
-      ? `SQLite vector fallback is active; Chroma is unavailable: ${vectorError}`
-      : "";
+    ? friendlyErrorMessage(embeddingError)
+    : "";
   $("indexError").textContent = notice;
   $("indexError").classList.toggle("visible", Boolean(notice));
   if (index.project_summary) $("indexProjectSummary").textContent = index.project_summary;
@@ -1132,7 +1233,7 @@ async function runCodeIndex(path, label) {
     renderCodeIndex(index);
     await refreshCodeIndex();
   } catch (err) {
-    $("indexError").textContent = err.message;
+    $("indexError").textContent = friendlyErrorMessage(err.message);
     $("indexError").classList.add("visible");
   } finally {
     $("syncCodeIndex").disabled = false;
@@ -1146,7 +1247,7 @@ function activateFileView(name) {
   $("fileBrowserView").classList.toggle("active", name === "browser");
   $("codeIndexView").classList.toggle("active", name === "index");
   if (name === "index") refreshCodeIndex().catch((err) => {
-    $("indexError").textContent = err.message;
+    $("indexError").textContent = friendlyErrorMessage(err.message);
     $("indexError").classList.add("visible");
   });
 }
@@ -1212,6 +1313,7 @@ function updateTavilyPanel(settings = state.data?.settings || {}) {
 async function saveSettings() {
   const apiUrl = $("topCustomApiUrl").value.trim() || $("customApiUrl").value.trim() || "https://api.openai.com/v1";
   const apiKey = $("topCustomApiKey").value || $("customApiKey").value;
+  const customApiModel = $("topCustomApiModel").value.trim() || $("customApiModel").value.trim() || "gpt-4o-mini";
   renderState(await api("/api/settings", {
     method: "POST",
     body: JSON.stringify({
@@ -1229,6 +1331,7 @@ async function saveSettings() {
       smart_skill_confirmation: $("smartSkillConfirmation").checked,
       custom_api_url: apiUrl,
       custom_api_key: apiKey,
+      custom_api_model: customApiModel,
     }),
   }));
 }
@@ -1428,7 +1531,7 @@ async function sendPrompt(prompt) {
 document.querySelectorAll(".tab").forEach((tab) => {
   tab.addEventListener("click", () => {
     activateTab(tab.dataset.tab);
-    setActiveActivity(tab.dataset.tab === "settings" ? "Settings" : "Search");
+    setActiveActivity(tab.dataset.tab === "settings" ? "Settings" : "Files");
   });
 });
 
@@ -1438,7 +1541,7 @@ document.querySelectorAll(".activity-btn").forEach((btn) => {
     setActiveActivity(label);
     if (label === "Projects") {
       showProjects();
-    } else if (label === "Search") {
+    } else if (label === "Files") {
       showWorkbench();
       activateTab("files");
       $("fileSearch").focus();
@@ -1448,19 +1551,41 @@ document.querySelectorAll(".activity-btn").forEach((btn) => {
     } else if (label === "Settings") {
       showWorkbench();
       activateTab("settings");
-    } else if (label === "Memory") {
-      showWorkbench();
-      activateTab("memory");
     }
   });
 });
 
 document.querySelectorAll(".project-tab").forEach((tab) => tab.addEventListener("click", () => activateProjectTab(tab.dataset.projectTab)));
+$("openCommandPalette").addEventListener("click", openCommandPalette);
+$("commandSearch").addEventListener("input", () => { state.commandSelection = 0; renderCommandPalette(); });
+document.querySelectorAll("[data-command-close]").forEach((element) => element.addEventListener("click", closeCommandPalette));
+document.addEventListener("keydown", (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+    event.preventDefault();
+    return $("commandPalette").hidden ? openCommandPalette() : closeCommandPalette();
+  }
+  if ($("commandPalette").hidden) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    return closeCommandPalette();
+  }
+  const commands = filteredCommands();
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (!commands.length) return;
+    state.commandSelection = (state.commandSelection + (event.key === "ArrowDown" ? 1 : -1) + commands.length) % commands.length;
+    return renderCommandPalette();
+  }
+  if (event.key === "Enter" && document.activeElement === $("commandSearch") && commands[state.commandSelection]) {
+    event.preventDefault();
+    return runCommand(commands[state.commandSelection].id);
+  }
+});
 $("backToProjects").addEventListener("click", () => { $("projectHome").classList.remove("active"); $("projectsIndex").classList.remove("hidden"); });
 $("openProjectInEditor").addEventListener("click", () => openProjectInEditor(false));
 $("startProjectSession").addEventListener("click", () => openProjectInEditor(true));
 $("newProjectSession").addEventListener("click", () => openProjectInEditor(true));
-$("newProject").addEventListener("click", async () => { showWorkbench(); setActiveActivity("Search"); await browseWorkspace(); });
+$("newProject").addEventListener("click", async () => { showWorkbench(); setActiveActivity("Files"); await browseWorkspace(); });
 $("openRuntimeSettings").addEventListener("click", () => { showWorkbench(); setActiveActivity("Settings"); activateTab("settings"); });
 
 $("fileSearch").addEventListener("input", renderFiles);
@@ -1474,7 +1599,7 @@ $("regenerateProjectSummary").addEventListener("click", async () => {
     await api("/api/index/regenerate-summary", {method: "POST", body: JSON.stringify({use_model: true})});
     await refreshCodeIndex();
   } catch (err) {
-    $("indexError").textContent = err.message;
+    $("indexError").textContent = friendlyErrorMessage(err.message);
     $("indexError").classList.add("visible");
   } finally {
     $("regenerateProjectSummary").disabled = false;
@@ -1541,4 +1666,10 @@ installEditorMetricStyles();
 updateGitAuthPanel();
 refresh().catch((err) => {
   $("messages").innerHTML = `<article class="message assistant"><span class="role">error</span>${escapeHtml(err.message)}</article>`;
+}).then(() => {
+  if (!state.initialProjectsShown) {
+    state.initialProjectsShown = true;
+    setActiveActivity("Projects");
+    showProjects().catch(() => showWorkbench());
+  }
 });
