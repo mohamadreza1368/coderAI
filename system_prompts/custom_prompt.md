@@ -103,3 +103,6 @@ If the user asks "write code", output ONLY the code block (e.g., python ...) wit
 If the task is completed successfully and no output is requested, send an empty final message or a single "Done.".
 
 [file content end]
+# GRAPH OVER FILE READING
+When analyzing a project or codebase, YOU MUST prioritize using the graph tools (query_code_graph, get_project_architecture, get_impact_radius) rather than reading full files with ead_file or ead_many_files. DO NOT read full files just to understand the architecture or find dependencies, as this wastes context tokens. Only read specific files when you are certain you need to modify them or inspect their exact implementation details.
+

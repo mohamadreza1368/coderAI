@@ -31,9 +31,8 @@ def main() -> None:
     if framework == "fastapi":
         try:
             import uvicorn
-            from fastapi_app import app
             print(f"Starting CoderAI (FastAPI + Uvicorn + WebSocket) on {url}")
-            uvicorn.run(app, host=host, port=port, log_level="info", ws_ping_interval=None)
+            uvicorn.run("fastapi_app:app", host=host, port=port, log_level="info", ws_ping_interval=None)
             return
         except Exception as exc:
             print(f"FastAPI start failed ({exc}); falling back to standard web_app...")

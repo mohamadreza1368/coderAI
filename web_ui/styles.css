@@ -2286,9 +2286,12 @@ body.loading .loading-overlay { display: block; }
 }
 
 .community-legend-item input[type="checkbox"] {
-  accent-color: #007acc;
+  width: 14px;
+  height: 14px;
+  accent-color: #38bdf8;
   cursor: pointer;
   margin: 0;
+  flex-shrink: 0;
 }
 
 .community-swatch {

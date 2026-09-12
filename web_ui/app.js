@@ -284,7 +284,7 @@ function setActiveActivity(label) {
   });
 }
 
-function renderState(data) {
+function renderState(data, updateChat = true) {
   state.data = data;
   const ws = data.workspace;
   $("workspacePath").textContent = ws.path;
@@ -337,9 +337,11 @@ function renderState(data) {
   renderPrompts();
   renderMemory(data.memory?.persistent || {});
   renderGit(data.git || {});
-  renderMessages();
-  if (!renderGeneratedArtifactFromState()) {
-    renderGeneratedCodeFromMessages();
+  if (updateChat) {
+    renderMessages();
+    if (!renderGeneratedArtifactFromState()) {
+      renderGeneratedCodeFromMessages();
+    }
   }
   if (state.workspaceLocked) setWorkspaceLocked(true);
 }
@@ -1169,8 +1171,13 @@ function showEditorView(name) {
   if ($("showCodeTab")) $("showCodeTab").classList.toggle("active", !isGit);
   if ($("showGitTab")) $("showGitTab").classList.toggle("active", isGit);
   setActiveActivity(isGit ? "Git" : "Files");
-  if (isGit && (!state.data?.git?.history || state.data.git.history.length === 0)) {
-    refresh();
+  if (isGit) {
+    api("/api/git").then((git) => {
+      if (git && state.data) {
+        state.data.git = git;
+        renderGit(git);
+      }
+    }).catch(() => {});
   }
 }
 
@@ -1744,7 +1751,6 @@ function currentActiveContext() {
 
 async function refresh() {
   renderState(await api("/api/state"));
-  await showProjects();
 }
 
 function renderCodeIndex(index = {}) {
@@ -1939,7 +1945,7 @@ async function saveSettings() {
   renderState(await api("/api/settings", {
     method: "POST",
     body: JSON.stringify(payload),
-  }));
+  }), false);
 }
 
 async function compactMemory() {
@@ -1964,7 +1970,7 @@ async function testSkills() {
 
 async function refreshModels() {
   await saveSettings();
-  renderState(await api("/api/state"));
+  renderState(await api("/api/state"), false);
 }
 
 async function selectPrompt(name) {
@@ -2282,6 +2288,8 @@ document.querySelectorAll(".tab").forEach((tab) => {
 
 document.querySelectorAll(".activity-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
+    state.initialProjectsShown = true;
+    state.userNavigated = true;
     const label = btn.getAttribute("aria-label");
     setActiveActivity(label);
     if (label === "Projects") {
@@ -2378,9 +2386,10 @@ $("tabLocalOllama")?.addEventListener("click", () => switchModelModeTab("ollama"
 $("tabCustomApi")?.addEventListener("click", () => switchModelModeTab("custom"));
 
 // Refresh Ollama in modal
-$("modalRefreshOllama")?.addEventListener("click", async () => {
-  renderState(await api("/api/models"));
-});
+  $("modalRefreshOllama")?.addEventListener("click", async () => {
+    const modelsPayload = await api("/api/models?force=true");
+    renderModels(modelsPayload, state.data?.settings?.model);
+  });
 
 // Apply Local Ollama
 $("applyLocalOllama")?.addEventListener("click", async () => {
@@ -2409,7 +2418,7 @@ $("applyLocalOllama")?.addEventListener("click", async () => {
   renderState(await api("/api/settings", {
     method: "POST",
     body: JSON.stringify(payload),
-  }));
+  }), false);
   await refreshModels();
 });
 
@@ -2450,7 +2459,7 @@ $("applyCustomApi")?.addEventListener("click", async () => {
   renderState(await api("/api/settings", {
     method: "POST",
     body: JSON.stringify(payload),
-  }));
+  }), false);
   await refreshModels();
 });
 
@@ -2491,9 +2500,10 @@ $("approvalReject").addEventListener("click", () => resolveApproval(false));
 $("codeEditor").addEventListener("input", () => {
   state.fileContent = $("codeEditor").value;
   state.editorDirty = true;
+  if ($("saveEditorCode")) $("saveEditorCode").style.display = "inline-flex";
   if (!state.activeFile || state.activeFile === "No file selected") {
     $("activeFile").textContent = "Untitled";
-    $("fileMeta").textContent = `${state.fileContent.length.toLocaleString()} chars · editable`;
+    $("fileMeta").textContent = `${state.fileContent.length.toLocaleString()} chars • editable`;
   }
   $("downloadCode").disabled = !state.fileContent;
   $("attachFile").disabled = !state.fileContent;
@@ -2502,11 +2512,37 @@ $("codeEditor").addEventListener("input", () => {
   updateTokenUsage();
 });
 
+$("saveEditorCode")?.addEventListener("click", async () => {
+  if (!state.activeFile || state.activeFile === "Untitled") return;
+  const btn = $("saveEditorCode");
+  const orig = btn.innerHTML;
+  try {
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg> Saving...`;
+    await api("/api/file/write", {
+      method: "POST",
+      body: JSON.stringify({ path: state.activeFile, content: state.fileContent })
+    });
+    state.editorDirty = false;
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="20 6 9 17 4 12"/></svg> Saved!`;
+    setTimeout(() => { btn.style.display = "none"; btn.innerHTML = orig; }, 1500);
+  } catch (err) {
+    btn.innerHTML = `<span style="color:var(--red);">Error!</span>`;
+    setTimeout(() => { btn.innerHTML = orig; }, 2000);
+  }
+});
+
 $("codeEditor").addEventListener("scroll", () => {
   syncEditorHighlightScroll();
 });
 
 $("codeEditor").addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    if ($("saveEditorCode") && $("saveEditorCode").style.display !== "none") {
+      $("saveEditorCode").click();
+    }
+    return;
+  }
   if (e.key === "Tab") {
     e.preventDefault();
     const editor = $("codeEditor");
@@ -3130,7 +3166,7 @@ function renderGraphifyNetwork(data) {
       size: n.size || 18,
       font: n.font || { color: "#e0e0e0", size: 12 },
       title: n.title || n.label,
-      shape: "dot",
+      shape: n.shape || "dot",
       borderWidth: 1.5,
       _raw: n,
     }))
@@ -3979,9 +4015,18 @@ refresh().catch((err) => {
   $("messages").innerHTML = `<article class="message assistant"><span class="role">error</span>${escapeHtml(err.message)}</article>`;
 }).then(() => {
   checkEmbeddingModelStatus();
-  if (!state.initialProjectsShown) {
+  const currentActivity = document.querySelector(".activity-btn.active")?.getAttribute("aria-label");
+  if (currentActivity && currentActivity !== "Projects") {
     state.initialProjectsShown = true;
-    setActiveActivity("Projects");
-    showProjects().catch(() => showWorkbench());
+  }
+  if (!state.initialProjectsShown && !state.userNavigated) {
+    state.initialProjectsShown = true;
+    const hasWorkspace = Boolean(state.data?.workspace?.path);
+    if (!hasWorkspace) {
+      setActiveActivity("Projects");
+      showProjects().catch(() => showWorkbench());
+    } else {
+      showWorkbench();
+    }
   }
 });

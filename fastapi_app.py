@@ -111,8 +111,9 @@ def create_app() -> FastAPI:
         return web_app._client_state()
 
     @app.get("/api/models")
-    async def get_models():
-        return web_app._available_models()
+    async def get_models(request: Request):
+        force = request.query_params.get("force", "false").lower() == "true"
+        return web_app._available_models(force=force)
 
     @app.get("/api/projects")
     async def get_projects():
@@ -356,6 +357,58 @@ def create_app() -> FastAPI:
     async def git_init():
         web_app._git_manager().init_repo()
         return web_app._git_snapshot()
+    @app.post("/api/git/clone_stream")
+    async def git_clone_stream(request: Request):
+        data = await request.json()
+        
+        async def event_generator() -> AsyncGenerator[str, None]:
+            q: queue.Queue = queue.Queue()
+            
+            def sink(ev: dict):
+                q.put(ev)
+                
+            def worker():
+                try:
+                    remote_url = web_app._validate_git_remote(data.get("remote_url", ""))
+                    destination = web_app._resolve_clone_destination(remote_url, str(data.get("destination") or ""))
+                    
+                    sink({"type": "git_clone_status", "message": f"Cloning {remote_url}"})
+                    
+                    from git_manager import GitManager
+                    manager = GitManager.clone_repository(
+                        remote_url,
+                        destination,
+                        on_output=lambda line: sink({"type": "git_clone_output", "content": line}),
+                        username=str(data.get("username") or ""),
+                        token=str(data.get("token") or ""),
+                    )
+                    
+                    ok, message = web_app._activate_workspace_memory(destination)
+                    if not ok:
+                        raise Exception(message)
+                        
+                    web_app.STATE["git_checkpoint_workspace"] = ""
+                    sink({"type": "git_clone_done", "path": str(manager.repo_path), "state": web_app._client_state()})
+                except Exception as e:
+                    sink({"type": "git_clone_error", "message": str(e)})
+                finally:
+                    q.put(None)
+                    
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            
+            while True:
+                try:
+                    ev = q.get_nowait()
+                    if ev is None:
+                        break
+                    yield json.dumps(ev, default=web_app._json_default, ensure_ascii=False) + "\n"
+                except queue.Empty:
+                    if not thread.is_alive() and q.empty():
+                        break
+                    await asyncio.sleep(0.01)
+                    
+        return StreamingResponse(event_generator(), media_type="application/x-ndjson")
 
     @app.post("/api/git/push-preview")
     async def git_push_preview():
@@ -447,12 +500,21 @@ def create_app() -> FastAPI:
     async def get_approval():
         return web_app.get_approval_state()
 
-    @app.post("/api/approval/respond")
-    async def respond_approval(request: Request):
+    @app.post("/api/approval/approve")
+    @app.post("/api/git/approve")
+    async def approve_action(request: Request):
         data = await request.json()
-        approved = bool(data.get("approved"))
-        web_app.respond_to_approval(approved)
-        return {"ok": True}
+        from tools import approve_pending, get_approval_state
+        approve_pending(bool(data.get("always_allow_for_session")))
+        return get_approval_state()
+
+    @app.post("/api/approval/reject")
+    @app.post("/api/git/reject")
+    async def reject_action(request: Request):
+        data = await request.json()
+        from tools import reject_pending, get_approval_state
+        reject_pending(data.get("reason", ""))
+        return get_approval_state()
 
     @app.get("/api/policies")
     async def get_policies(workspace_path: str = ""):
@@ -554,6 +616,20 @@ def create_app() -> FastAPI:
     async def get_index_overview():
         index = web_app.CodebaseIndex(web_app.get_workspace())
         return {"overview": index.get_project_overview(), "graph": index.dependency_tree()}
+
+    @app.post("/api/index/sync")
+    async def index_sync():
+        return web_app.CodebaseIndex(web_app.get_workspace()).sync_incremental()
+
+    @app.post("/api/index/rebuild")
+    async def index_rebuild():
+        return web_app.CodebaseIndex(web_app.get_workspace()).rebuild()
+
+    @app.post("/api/index/regenerate-summary")
+    async def index_regenerate_summary(request: Request):
+        data = await request.json()
+        model = web_app._active_model() if data.get("use_model") else None
+        return web_app.CodebaseIndex(web_app.get_workspace()).regenerate_summaries(model=model)
 
     @app.get("/api/graph/overview")
     async def get_graph_overview(request: Request):

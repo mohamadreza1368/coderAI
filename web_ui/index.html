@@ -63,14 +63,27 @@
 
     <div class="workbench">
       <nav class="activity-rail" aria-label="Primary navigation">
-        <button class="activity-btn active" type="button" title="Projects" aria-label="Projects">
+        <button class="activity-btn" type="button" title="Projects" aria-label="Projects">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>
         </button>
-        <button class="activity-btn" type="button" title="Files" aria-label="Files">
+        <button class="activity-btn active" type="button" title="Files" aria-label="Files">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
         </button>
         <button class="activity-btn" type="button" title="Code Graph" aria-label="Graph">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.2" fill="currentColor"/><circle cx="19" cy="6" r="2.2" fill="currentColor"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/><circle cx="5" cy="18" r="2.2" fill="currentColor"/><circle cx="19" cy="18" r="2.2" fill="currentColor"/><line x1="7.2" y1="6" x2="16.8" y2="6"/><line x1="6.5" y1="7.5" x2="10.5" y2="10.5"/><line x1="17.5" y1="7.5" x2="13.5" y2="10.5"/><line x1="5" y1="8.2" x2="5" y2="15.8"/><line x1="19" y1="8.2" x2="19" y2="15.8"/><line x1="10.5" y1="13.5" x2="6.5" y2="16.5"/><line x1="13.5" y1="13.5" x2="17.5" y2="16.5"/><line x1="7.2" y1="18" x2="16.8" y2="18"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="5" r="2" />
+            <circle cx="19" cy="12" r="2" />
+            <circle cx="5" cy="12" r="2" />
+            <circle cx="12" cy="19" r="2" />
+            <line x1="12" y1="7" x2="12" y2="10" />
+            <line x1="12" y1="14" x2="12" y2="17" />
+            <line x1="7" y1="12" x2="10" y2="12" />
+            <line x1="14" y1="12" x2="17" y2="12" />
+            <line x1="8.5" y1="8.5" x2="11" y2="11" />
+            <line x1="15.5" y1="15.5" x2="13" y2="13" />
+            <line x1="15.5" y1="8.5" x2="13" y2="11" />
+            <line x1="8.5" y1="15.5" x2="11" y2="13" />
+          </svg>
         </button>
         <button class="activity-btn" type="button" title="Source Control & Git" aria-label="Git">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
@@ -403,6 +416,10 @@
           <div class="editor-actions">
             <button id="showCodeTab" type="button" class="editor-tab active">Code</button>
             <span id="editorLanguage" class="editor-language">text</span>
+            <button id="saveEditorCode" type="button" class="ghost" style="color: var(--accent); display:none;" title="Save file (Ctrl+S)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              Save
+            </button>
             <button id="copyEditorCode" type="button" class="ghost" title="Copy editor content to clipboard">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               Copy
@@ -629,9 +646,20 @@
         <header class="code-graph-header">
           <div class="code-graph-header-left">
             <div class="code-graph-title">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;color:#38bdf8">
-                <circle cx="5" cy="6" r="2.2" fill="currentColor"/><circle cx="19" cy="6" r="2.2" fill="currentColor"/><circle cx="12" cy="12" r="2.5" fill="currentColor"/><circle cx="5" cy="18" r="2.2" fill="currentColor"/><circle cx="19" cy="18" r="2.2" fill="currentColor"/><line x1="7.2" y1="6" x2="16.8" y2="6"/><line x1="6.5" y1="7.5" x2="10.5" y2="10.5"/><line x1="17.5" y1="7.5" x2="13.5" y2="10.5"/><line x1="5" y1="8.2" x2="5" y2="15.8"/><line x1="19" y1="8.2" x2="19" y2="15.8"/><line x1="10.5" y1="13.5" x2="6.5" y2="16.5"/><line x1="13.5" y1="13.5" x2="17.5" y2="16.5"/><line x1="7.2" y1="18" x2="16.8" y2="18"/>
-              </svg>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;color:#38bdf8">
+                  <circle cx="12" cy="5" r="2" />
+                  <circle cx="19" cy="12" r="2" />
+                  <circle cx="5" cy="12" r="2" />
+                  <circle cx="12" cy="19" r="2" />
+                  <line x1="12" y1="7" x2="12" y2="10" />
+                  <line x1="12" y1="14" x2="12" y2="17" />
+                  <line x1="7" y1="12" x2="10" y2="12" />
+                  <line x1="14" y1="12" x2="17" y2="12" />
+                  <line x1="8.5" y1="8.5" x2="11" y2="11" />
+                  <line x1="15.5" y1="15.5" x2="13" y2="13" />
+                  <line x1="15.5" y1="8.5" x2="13" y2="11" />
+                  <line x1="8.5" y1="15.5" x2="11" y2="13" />
+                </svg>
               <strong>Architecture &amp; Knowledge Graph</strong>
               <span id="graphifyBadge" class="graphify-badge">Physics AST</span>
             </div>
@@ -683,14 +711,6 @@
             <div class="inspector-footer" id="graphifyStatsFooter">0 nodes · 0 edges</div>
           </div>
         </div>
-
-        <footer class="schematic-legend">
-          <span class="legend-chip chip-folder"><i class="dot" style="background:#38bdf8"></i> File</span>
-          <span class="legend-chip chip-class"><i class="dot" style="background:#fbbf24"></i> Class</span>
-          <span class="legend-chip chip-func"><i class="dot" style="background:#10b981"></i> Function</span>
-          <span class="legend-chip chip-call"><i class="dot" style="background:#a855f7"></i> Call</span>
-          <span class="legend-hint">💡 Double-click any node to open and jump to line in Code Editor</span>
-        </footer>
       </section>
     </div>
 
@@ -893,6 +913,6 @@
   <script src="/vendor/xterm/xterm.js"></script>
   <script src="/vendor/xterm/xterm-addon-fit.js"></script>
   <script src="/vendor/xterm/xterm-addon-web-links.js"></script>
-  <script src="/app.js?v=editor-layout-fix-20260907-1"></script>
+  <script src="/app.js?v=20260912-git-jump-fix-final"></script>
 </body>
 </html>

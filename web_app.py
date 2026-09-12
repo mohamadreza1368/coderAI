@@ -119,7 +119,7 @@ DEFAULT_ACTIVE_PROMPT = (ROOT / "system_prompts" / f"{DEFAULT_PROMPT_NAME}.md").
 MAX_CONTEXT_CHARS = 32_000
 MAX_HISTORY_MESSAGE_CHARS = 6_000
 MAX_ASSISTANT_HISTORY_CHARS = 3_500
-MAX_KEPT_HISTORY_MESSAGES = 12
+MAX_KEPT_HISTORY_MESSAGES = 6
 MAX_ITERATIONS = 10
 REQUEST_TIMEOUT = int(os.getenv("AGENT_REQUEST_TIMEOUT", "1800"))
 DEFAULT_CONTEXT_TOKEN_BUDGET = int(os.getenv("AGENT_CONTEXT_TOKENS", "24000"))
@@ -521,7 +521,7 @@ def _persistent_memory_context(query: str) -> str:
         sections = []
         # 1. Knowledge Graph (KG-RAG) Context
         try:
-            kg_context = _graph_memory_store().retrieve_context(query, token_budget=400)
+            kg_context = _graph_memory_store().retrieve_context(query, token_budget=1500)
             if kg_context:
                 sections.append(kg_context.strip())
         except Exception:
@@ -561,7 +561,11 @@ def _persistent_memory_context(query: str) -> str:
 
 
 def _codebase_rag_context(query: str) -> str:
+    # Per user request (Suggestion 2), automatic RAG injection is turned off.
+    # The agent is expected to use the `search_codebase` tool when it needs code context.
     try:
+        # We still run a lightweight metadata-only or fast retrieval if we just want UI highlights, 
+        # but for prompt context, we return an empty string to save tokens.
         retrieval = CodebaseIndex(get_workspace()).retrieve_context(query, top_k=5)
         hits = retrieval["chunks"]
         STATE["code_rag_type"] = retrieval["query_type"]
@@ -569,29 +573,7 @@ def _codebase_rag_context(query: str) -> str:
             {key: hit.get(key) for key in ("file_path", "symbol_name", "symbol_type", "start_line", "end_line", "score")}
             for hit in hits
         ]
-        if retrieval["query_type"] == "project_level":
-            overview = retrieval["overview"]
-            sections = ["[Indexed project-level context]", overview["summary"], "\nKey files:"]
-            sections.extend(f"- {item['file_path']}: {item['summary']}" for item in overview["key_files"][:8])
-            sections.append("Answer at project scope and explain how the major files collaborate. Do not reduce the answer to one file.")
-            return _clip_for_context("\n".join(sections), 14_000)
-        if not hits:
-            return ""
-        sections = ["[Relevant indexed code chunks]"]
-        remaining = 12_000
-        for hit in hits:
-            label = f"{hit.get('symbol_type') or 'code'} {hit.get('symbol_name') or ''}".strip()
-            header = f"\n--- {hit['file_path']}:{hit['start_line']}-{hit['end_line']} ({label}) ---\n"
-            block = header + str(hit.get("content") or "")[:max(0, remaining - len(header))]
-            sections.append(block)
-            remaining -= len(block)
-            if remaining <= 0:
-                break
-        if retrieval["related_files"]:
-            sections.append("\n[Graph-related file summaries]")
-            sections.extend(f"- {item['file_path']}: {item['summary']}" for item in retrieval["related_files"])
-        sections.append("Use these chunks for orientation, but read the current file before editing it.")
-        return "\n".join(sections)
+        return ""
     except Exception:
         STATE["code_rag_hits"] = []
         STATE["code_rag_type"] = ""
@@ -651,6 +633,13 @@ def _auto_index_workspace_background(workspace_path: str | Path) -> None:
         try:
             CodebaseIndex(ws).sync_incremental()
             res = GraphMemoryStore(ws).index_project_workspace()
+            
+            try:
+                from code_graph_service import code_graph_service
+                code_graph_service.build_or_update(ws, full_rebuild=False)
+            except Exception:
+                pass
+
             try:
                 mm = MemoryManager(ws)
                 if res.get("project_name"):
@@ -948,27 +937,19 @@ def _build_workspace_context(active_context: dict | None = None) -> str:
                     "Keep any prose short and separate from the fenced code block.",
                 ]
                 body = _clip_for_context(content, 18_000)
+                lines += [
+                    "",
+                    f"```{active_context.get('info') or ''}".rstrip(),
+                    body,
+                    "```",
+                ]
             else:
                 lines += [
                     "The user's next request is about this file unless they explicitly say otherwise.",
+                    "If you need to see the code inside this file to answer their request, use the `read_file` tool.",
+                    "Do NOT guess the file contents. Retrieve it via tool if needed.",
                     "Use `write_file` or `replace_in_file` to apply requested changes to this path when appropriate.",
                 ]
-                if len(content) <= 3000 and content.count("\n") <= 100:
-                    body = _clip_for_context(content, 18_000)
-                else:
-                    outline = extract_code_outline(content, file_path=path)
-                    total_lines = content.count("\n") + 1
-                    body = (
-                        f"/* STRUCTURAL CODE OUTLINE ({total_lines} lines, {len(content)} chars) */\n"
-                        f"/* Use `read_file(path=\"{path}\", start_line=..., end_line=...)` to view exact implementation details */\n\n"
-                        f"{outline}"
-                    )
-            lines += [
-                "",
-                f"```{active_context.get('info') or ''}".rstrip(),
-                body,
-                "```",
-            ]
     return "\n".join(lines)
 
 
@@ -1278,38 +1259,48 @@ def _get_json(url: str, headers: dict | None = None, timeout: int = 15) -> dict:
             raise ValueError(f"Failed to parse JSON response from {url}: {raw[:120]}") from err
 
 
-def _available_models() -> dict:
-    conn_mode = STATE["conn_mode"]
+
+_MODELS_CACHE = {"local": [], "custom": []}
+def _available_models(force: bool = False) -> dict:
+    global _MODELS_CACHE
+    conn_mode = STATE.get("conn_mode", "local")
     try:
         if conn_mode == MODE_LOCAL:
-            data = _get_json("http://127.0.0.1:11434/api/tags")
-            raw_models = data.get("models", [])
-            names = [m.get("model") or m.get("name") for m in raw_models if isinstance(m, dict)]
-            names = [name for name in names if name]
-            preferred = next((name for name in names if not name.endswith(":cloud")), names[0] if names else STATE["model"])
-            if names and (STATE["model"] not in names or (not STATE["model_user_selected"] and STATE["model"].endswith(":cloud"))):
+            if not force and _MODELS_CACHE["local"]:
+                names = _MODELS_CACHE["local"]
+            else:
+                data = _get_json("http://127.0.0.1:11434/api/tags", timeout=2)
+                raw_models = data.get("models", [])
+                names = [m.get("model") or m.get("name") for m in raw_models if isinstance(m, dict)]
+                names = [name for name in names if name]
+                if names: _MODELS_CACHE["local"] = names
+            preferred = next((name for name in names if not name.endswith(":cloud")), names[0] if names else STATE.get("model", "gemma4:12b"))
+            if names and (STATE.get("model") not in names or (not STATE.get("model_user_selected") and str(STATE.get("model", "")).endswith(":cloud"))):
                 STATE["model"] = preferred
-            return {"models": names, "selected_model": STATE["model"], "error": None}
+            return {"models": names, "selected_model": STATE.get("model"), "error": None}
         else:
             selected = _active_model()
             names = []
-            try:
-                headers = {}
-                if STATE.get("custom_api_key"):
-                    headers["Authorization"] = f"Bearer {STATE['custom_api_key']}"
-                models_url = f"{STATE.get('custom_api_url', '').rstrip('/')}/models"
-                data = _get_json(models_url, headers=headers, timeout=12)
-                raw_models = data.get("data", []) if isinstance(data, dict) else []
-                names = [m.get("id") or m.get("name") for m in raw_models if isinstance(m, dict)]
-            except Exception:
-                names = []
-            names = [name for name in names if name]
-            if selected and selected not in names:
-                names.insert(0, selected)
+            if not force and _MODELS_CACHE["custom"]:
+                names = _MODELS_CACHE["custom"]
+            else:
+                try:
+                    headers = {}
+                    if STATE.get("custom_api_key"):
+                        headers["Authorization"] = f"Bearer {STATE['custom_api_key']}"
+                    models_url = f"{STATE.get('custom_api_url', '').rstrip('/')}/models"
+                    data = _get_json(models_url, headers=headers, timeout=3)
+                    raw_models = data.get("data", []) if isinstance(data, dict) else []
+                    names = [m.get("id") or m.get("name") for m in raw_models if isinstance(m, dict)]
+                    names = [name for name in names if name]
+                    if names: _MODELS_CACHE["custom"] = names
+                except Exception:
+                    pass
+            if not names:
+                names = ["gpt-4o-mini", "gpt-4o", "claude-3-5-sonnet", "deepseek-chat"]
             return {"models": names, "selected_model": selected, "error": None}
-    except Exception as exc:
-        return {"models": [_active_model()], "selected_model": _active_model(), "error": str(exc)}
-
+    except Exception as e:
+        return {"models": [_active_model()], "selected_model": _active_model(), "error": str(e)}
 
 def _prompt_payload() -> dict:
     return {

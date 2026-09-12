@@ -14,8 +14,8 @@ from typing import Any, Callable
 DEFAULT_CONTEXT_TOKEN_BUDGET = 32_000
 DEFAULT_RESPONSE_TOKEN_BUDGET = 4_096
 MAX_HISTORY_MESSAGE_CHARS = 12_000
-MAX_ASSISTANT_HISTORY_CHARS = 18_000
-MAX_KEPT_HISTORY_MESSAGES = 14
+MAX_ASSISTANT_HISTORY_CHARS = 3_500
+MAX_KEPT_HISTORY_MESSAGES = 6
 
 
 def clip_for_context(text: str, limit: int) -> str:
@@ -68,37 +68,47 @@ def compact_tool_output(content: str, max_chars: int = 1500, tool_name: str = ""
 
 
 def extract_code_outline(code: str, file_path: str = "") -> str:
-    """Extracts a structural symbol outline (classes, functions, methods, line numbers) to conserve context tokens."""
+    """Extracts a structural symbol outline (classes, functions, methods, line numbers) using Tree-sitter AST."""
     if not code:
         return "[Empty file]"
 
     lines = code.splitlines()
     total_lines = len(lines)
-    is_python = file_path.endswith(".py") or "def " in code or "class " in code
-
     symbols: list[str] = []
 
-    if is_python:
-        try:
-            tree = ast.parse(code)
-            for node in tree.body:
-                if isinstance(node, ast.ClassDef):
-                    symbols.append(f"Line {node.lineno}: class {node.name}")
-                    for item in node.body:
-                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            args = [a.arg for a in item.args.args]
-                            symbols.append(f"  Line {item.lineno}: def {item.name}({', '.join(args)})")
-                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    args = [a.arg for a in node.args.args]
-                    symbols.append(f"Line {node.lineno}: def {node.name}({', '.join(args)})")
-        except Exception:
-            pass
+    try:
+        import tempfile
+        from pathlib import Path
+        from code_graph_service import code_graph_service
+        
+        # Only attempt if code-review-graph is actually available
+        if code_graph_service.is_available():
+            import code_review_graph.parser
+            
+            # Write to a temporary file with the correct extension so Tree-sitter detects language
+            ext = os.path.splitext(file_path)[1] if file_path else ".py"
+            with tempfile.NamedTemporaryFile(suffix=ext, mode='w', encoding='utf-8', delete=False) as f:
+                f.write(code)
+                temp_name = f.name
+                
+            try:
+                parser = code_review_graph.parser.CodeParser()
+                nodes, _ = parser.parse_file(Path(temp_name))
+                for n in nodes:
+                    if n.kind in ("Class", "Function", "Method", "Interface", "TypeAlias"):
+                        indent = "  " if n.parent_name else ""
+                        params = n.params or ""
+                        symbols.append(f"{indent}Line {n.line_start}-{n.line_end}: {n.kind.lower()} {n.name}{params}")
+            finally:
+                os.unlink(temp_name)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug(f"CodeParser outline failed: {e}")
 
+    # Fallback to simple regex if code_review_graph failed or found nothing
     if not symbols:
-        # Generic / JS / TS regex fallback
         for i, line in enumerate(lines, 1):
             stripped = line.strip()
-            # Python def / class fallback
             m = re.match(r"^(class\s+[a-zA-Z0-9_]+(?:\([^)]*\))?):", stripped)
             if m:
                 symbols.append(f"Line {i}: {m.group(1)}")
@@ -108,10 +118,9 @@ def extract_code_outline(code: str, file_path: str = "") -> str:
                 indent = "  " if line.startswith(("    ", "\t")) else ""
                 symbols.append(f"{indent}Line {i}: {m.group(1)}")
                 continue
-            # JS / TS class, function, arrow
-            m = re.match(r"^(?:export\s+)?(?:default\s+)?class\s+([a-zA-Z0-9_]+)", stripped)
+            m = re.match(r"^(?:export\s+)?(?:default\s+)?(?:class|function|interface|type)\s+([a-zA-Z0-9_]+)", stripped)
             if m:
-                symbols.append(f"Line {i}: class {m.group(1)}")
+                symbols.append(f"Line {i}: {stripped[:100]}...")
                 continue
             m = re.match(r"^(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)\s*(\([^)]*\))", stripped)
             if m:
@@ -138,7 +147,10 @@ def extract_code_outline(code: str, file_path: str = "") -> str:
         preview = "\n".join(lines[:15])
         return f"{header}\n(No major class/function declarations detected. Head preview):\n{preview}"
 
-    return header + "\n" + "\n".join(symbols)
+    out = header + "\n" + "\n".join(symbols)
+    if len(out) > 8000:
+        return out[:8000] + "\n... [outline truncated]"
+    return out
 
 
 def compress_source_code(code: str, mode: str = "clean") -> str:

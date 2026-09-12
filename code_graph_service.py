@@ -329,6 +329,7 @@ class CodeGraphService:
                     "label": p.name,
                     "full_path": rel,
                     "type": "file",
+                    "shape": "dot",
                     "is_entry": is_entry,
                     "symbols_count": sym_count,
                     "start_line": 1,
@@ -568,7 +569,7 @@ class CodeGraphService:
                 node_size = max(14, min(34, 14 + deg * 2 + (5 if is_entry else 0)))
                 nodes.append({
                     "id": rel,
-                    "label": p.name,
+                    "label": f"File {p.name}",
                     "title": f"File: {rel}\nType: file\nSymbols: {sym_count}\nDegree: {deg}\nCommunity: {cid_to_name[cid]}",
                     "color": {
                         "background": color,
@@ -581,6 +582,7 @@ class CodeGraphService:
                     "community_name": cid_to_name[cid],
                     "source_file": rel,
                     "file_type": "file",
+                    "shape": "dot",
                     "degree": deg,
                     "is_entry": is_entry,
                     "start_line": 1,
@@ -632,7 +634,7 @@ class CodeGraphService:
 
                 nodes.append({
                     "id": sym_id,
-                    "label": n.name,
+                    "label": f"{n.kind} {n.name}",
                     "title": f"{n.kind}: {n.name}\nFile: {rel_file}:{n.line_start}\nDegree: {deg}\nCommunity: {cname}",
                     "color": {
                         "background": color,
@@ -645,6 +647,7 @@ class CodeGraphService:
                     "community_name": cname,
                     "source_file": rel_file,
                     "file_type": n.kind.lower(),
+                    "shape": "diamond" if is_class else "square",
                     "degree": deg,
                     "start_line": n.line_start or 1,
                     "end_line": n.line_end or 1,
