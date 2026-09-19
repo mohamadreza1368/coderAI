@@ -41,6 +41,21 @@ def test_destructive_command_in_run_bash():
     assert "Command blocked" in result
 
 
+def test_benign_run_bash_requires_approval(tmp_path):
+    """P1 #9/#12: even a non-destructive command prompts (default policy 'always').
+
+    With the sandbox falling back to a local shell (no Docker) and the
+    destructive blocklist trivially bypassed, 'dangerous_only' left an
+    unprompted RCE surface. Any run_bash must now be gated.
+    """
+    ws = _fresh_ws(tmp_path)
+    # "echo" matches no destructive pattern, but still requires approval.
+    payload = _approval_payload(execute_tool("run_bash", {"command": "echo hello"}))
+    assert payload["status"] == "approval_required", f"run_bash not gated: {payload}"
+    assert payload["tool_name"] == "run_bash"
+    assert payload.get("token")
+
+
 def test_sanitized_env():
     os.environ["CUSTOM_API_KEY"] = "secret_12345"
     os.environ["TAVILY_API_KEY"] = "tvly_secret"

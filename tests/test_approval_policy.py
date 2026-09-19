@@ -18,7 +18,7 @@ def test_default_global_policy(tmp_path):
 
     assert policy["write_file"] == "always"
     assert policy["replace_in_file"] == "always"
-    assert policy["run_bash"] == "dangerous_only"
+    assert policy["run_bash"] == "always"
     assert policy["run_python"] == "always"
     assert policy["git_push"] == "always"
     assert policy["git_revert"] == "always"
@@ -75,7 +75,7 @@ def test_workspace_policy_inheritance_and_override(tmp_path):
     reset_ws = mgr.get_workspace_policy(ws_dir)
     assert reset_ws["mode"] == "inherit"
     eff_reset = mgr.get_effective_policy(ws_dir)
-    assert eff_reset["run_bash"] == "dangerous_only"
+    assert eff_reset["run_bash"] == "always"
     assert eff_reset["write_file"] == "always"
 
 
@@ -86,19 +86,22 @@ def test_should_require_approval(tmp_path):
 
     mgr = ApprovalPolicyManager(global_settings_path=settings_file)
 
-    # Default policy: safe command does not require approval
+    # Default policy: ANY run_bash requires approval (local-shell fallback and
+    # the bypassable destructive blocklist mean "dangerous_only" was unsafe).
+    req, reason, ptype = mgr.should_require_approval(
+        "run_bash", {"command": "git log -n 5"}, ws_dir
+    )
+    assert req is True
+    assert ptype == "command"
+
+    # An explicit "auto" override opts out of prompting.
+    mgr.save_workspace_policy(ws_dir, mode="custom", policy={"run_bash": "auto"})
     req, reason, ptype = mgr.should_require_approval(
         "run_bash", {"command": "git log -n 5"}, ws_dir
     )
     assert req is False
     assert ptype == "command"
-
-    # Dangerous command requires approval
-    req, reason, ptype = mgr.should_require_approval(
-        "run_bash", {"command": "rm -rf ./node_modules"}, ws_dir
-    )
-    assert req is True
-    assert "High-risk command" in reason
+    mgr.reset_workspace_policy(ws_dir)
 
 
     # File writes require approval by default
@@ -128,7 +131,7 @@ def test_api_policies_endpoints():
     assert "global" in data
     assert "workspace" in data
     assert "effective" in data
-    assert data["global"]["run_bash"] in {"always", "dangerous_only", "auto"}
+    assert data["global"]["run_bash"] == "always"
 
 
     # POST</api/policies (workspace custom)

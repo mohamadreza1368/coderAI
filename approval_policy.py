@@ -21,7 +21,12 @@ DEFAULT_GLOBAL_POLICY: dict[str, str] = {
     "replace_in_file": "always",    # "always" (diff preview) | "auto"
     "delete_file": "always",        # "always" (diff preview) | "auto"
     "append_file": "always",        # "always" (diff preview) | "auto"
-    "run_bash": "dangerous_only",  # "always" | "dangerous_only" | "auto"
+    # run_bash requires approval for ANY command. On a box without Docker the
+    # sandbox falls back to a local shell, and the narrow destructive-command
+    # blocklist is trivially bypassed, so a "dangerous_only" rule left a wide
+    # unprompted RCE surface. "always" (with an "auto" override for users who
+    # explicitly accept the risk) is the safe default.
+    "run_bash": "always",        # "always" | "auto"
     "run_python": "always",        # "always" | "auto"
     "git_push": "always",          # "always" | "auto"
     "git_revert": "always",        # "always" | "auto"
@@ -222,15 +227,11 @@ class ApprovalPolicyManager:
                 return False, "", "diff"
             return True, f"Policy requires review for {tool_name}", "diff"
 
-        # 2. Bash / Terminal commands
+        # 2. Bash / Terminal commands. Any command prompts under the default
+        # "always" rule; the destructive-command blocklist is a separate,
+        # earlier hard stop, so policy no longer needs to inspect the command.
         if tool_name in {"run_bash", "run_terminal_command"}:
-            cmd = arguments.get("command") or arguments.get("cmd") or ""
             if rule == "auto":
-                return False, "", "command"
-            if rule == "dangerous_only":
-                is_danger, danger_desc = is_dangerous_bash(cmd)
-                if is_danger:
-                    return True, f"High-risk command detected: {danger_desc}", "command"
                 return False, "", "command"
             return True, f"Policy requires review for {tool_name}", "command"
 
