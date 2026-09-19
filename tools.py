@@ -1395,7 +1395,53 @@ def tool_run_python(code: str) -> str:
     return output or "(empty output)"
 
 
+def _blocked_ip_reason(ip: "ipaddress._BaseAddress") -> str | None:
+    """Return a human-readable reason if *ip* is not a safe, public target.
+
+    Only globally-routable public addresses are allowed. Anything that is
+    loopback, private, link-local (which includes the cloud metadata address
+    169.254.169.254), unspecified, reserved, or carrier-grade-NAT is blocked.
+    ``is_global`` is the authoritative gate; the specific branches only shape
+    the message.
+    """
+    if ip.is_global:
+        return None
+    if ip.is_loopback:
+        return "loopback"
+    if ip.is_link_local:
+        return "link-local (includes cloud metadata)"
+    if ip.is_private:
+        return "private"
+    if ip.is_unspecified:
+        return "unspecified"
+    if ip.is_reserved:
+        return "reserved"
+    return "non-global"
+
+
+class _SSRFRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-validate every redirect target against the SSRF policy.
+
+    A 30x response pointing at a private/metadata host must be refused, so a
+    public page cannot bounce the client into the internal network.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        safe, reason = _is_url_safe(newurl)
+        if not safe:
+            raise urllib.error.HTTPError(newurl, code, f"Redirect to blocked address: {reason}", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _is_url_safe(url: str) -> tuple[bool, str]:
+    """Return ``(True, "")`` only if *url* is an http(s) URL whose hostname
+    resolves exclusively to public, globally-routable addresses.
+
+    The hostname is resolved with ``getaddrinfo`` and *every* resolved address
+    is checked, which closes the DNS-name SSRF vector (e.g. ``localtest.me`` →
+    ``127.0.0.1``) that a string-only check misses. Non-http schemes are
+    rejected outright.
+    """
     try:
         parsed = urllib.parse.urlparse(url)
         if parsed.scheme not in {"http", "https"}:
@@ -1403,14 +1449,24 @@ def _is_url_safe(url: str) -> tuple[bool, str]:
         hostname = parsed.hostname
         if not hostname:
             return False, "Invalid URL hostname"
-        if hostname.lower() in {"localhost", "127.0.0.1", "::1"}:
-            return False, "Requests to localhost/loopback addresses are blocked"
+
         try:
-            ip = ipaddress.ip_address(hostname)
-            if ip.is_private or ip.is_loopback or ip.is_link_local:
-                return False, f"Requests to private/internal IP address {ip} are blocked"
-        except ValueError:
-            pass
+            infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+        except socket.gaierror as exc:
+            return False, f"Could not resolve hostname: {exc}"
+
+        if not infos:
+            return False, "Hostname resolved to no addresses"
+
+        for info in infos:
+            ip_str = info[4][0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+            except ValueError:
+                continue
+            reason = _blocked_ip_reason(ip)
+            if reason:
+                return False, f"Requests to {reason} addresses are blocked ({ip_str})"
         return True, ""
     except Exception as exc:
         return False, f"URL parse error: {exc}"
@@ -1422,7 +1478,8 @@ def tool_fetch_url(url: str, max_chars: int = 4000) -> str:
         if not safe:
             return f"Error: {reason}"
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        opener = urllib.request.build_opener(_SSRFRedirectHandler())
+        with opener.open(req, timeout=10) as resp:
             raw = resp.read()
         enc  = resp.headers.get_content_charset() or "utf-8"
         text = raw.decode(enc, errors="replace")
