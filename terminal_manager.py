@@ -26,6 +26,27 @@ except Exception:
 VT_QUERY_FILTER = re.compile(r"\x1b\[c|\x1b\[\?1004[hl]|\x1b\[\?9001[hl]|\x1b\[[12]t|\x1b\[\?1;[0-9]+c|\?1;[0-9]+c")
 
 
+def _contained_cwd(cwd: str | Path | None) -> Path:
+    """Return *cwd* if it is inside the active workspace, else the workspace.
+
+    A terminal session anchored outside the workspace (e.g. ``C:\\Windows``,
+    the user profile) becomes a user-RCE surface once ``execute`` runs a
+    command there. The requested cwd is resolved; if it escapes the active
+    workspace the session is re-anchored to the workspace root instead.
+    """
+    from tools import get_workspace
+
+    ws = Path(get_workspace()).resolve()
+    if cwd:
+        try:
+            requested = Path(cwd).resolve()
+            requested.relative_to(ws)
+            return requested
+        except (ValueError, OSError):
+            pass  # escapes the workspace (or unresolvable)
+    return ws if ws.exists() else Path.cwd().resolve()
+
+
 class TerminalSession:
     """Represents an interactive terminal execution session."""
 
@@ -39,7 +60,7 @@ class TerminalSession:
     ):
         self.session_id = session_id
         self.shell_type = shell_type.lower()
-        self.cwd = Path(cwd or Path.cwd()).resolve()
+        self.cwd = _contained_cwd(cwd)
         self.rows = max(5, rows)
         self.cols = max(10, cols)
         self.pty_proc: winpty.PtyProcess | None = None
@@ -307,9 +328,17 @@ class TerminalSession:
             return False
 
     def set_cwd(self, new_cwd: str | Path) -> bool:
-        p = Path(new_cwd).resolve()
-        if p.exists() and p.is_dir():
-            self.cwd = p
+        # Refuse to re-anchor outside the workspace; keep the current cwd if the
+        # requested path escapes (an escape attempt stays contained).
+        try:
+            requested = Path(new_cwd).resolve()
+        except (OSError, ValueError):
+            return False
+        contained = _contained_cwd(new_cwd)
+        if contained != requested:
+            return False
+        if contained.exists() and contained.is_dir():
+            self.cwd = contained
             if not self.is_running():
                 self.start_shell()
             return True
