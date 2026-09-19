@@ -5,6 +5,29 @@ All notable changes to CoderAI are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-09-16
+
+### Fixed
+
+- **`fetch_url` is now SSRF-safe.** The guard only checked the scheme and whether
+  the hostname *string* looked local, so a DNS name that resolves to a
+  private/metadata address (`localtest.me` → `127.0.0.1`) passed and a `302` to
+  the cloud metadata service (`169.254.169.254`) was never re-checked. Every
+  resolved address is now validated (public-only), and a redirect handler
+  re-validates each hop so a public page cannot bounce the client into the
+  internal network.
+- **Terminal sessions are contained to the workspace.** A session could be
+  anchored at any path (`C:\Windows`, the user profile) and then run commands
+  there — a user-RCE surface anywhere on disk. The requested cwd is now
+  resolved; if it escapes the active workspace the session is re-anchored to the
+  workspace root, and `set_cwd` refuses to move outside it.
+- **`run_bash` requires approval on every command.** It defaulted to
+  `dangerous_only`, which ran any non-matching command unprompted — and without
+  Docker the sandbox falls back to a local shell, so the narrow destructive
+  blocklist was the only guard. The default is now `always`; the destructive
+  block is kept as defense-in-depth, and an explicit `auto` override is
+  available for users who accept the risk.
+
 ## [1.4.0] - 2026-09-16
 
 ### Changed

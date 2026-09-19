@@ -351,8 +351,16 @@ and non-read-only SQL — is gated behind **per-request approval** before it run
 - The advanced shell tools no longer run model-controlled strings through a shell: fixed
   binaries (kubectl/terraform/docker/npm) run as argv lists, and linter/tests run through
   the sandboxed runner, so shell metacharacters are not a second, ungated injection path.
+- **`run_bash` always prompts.** On a box without Docker the sandbox falls back to a local
+  shell, so any `run_bash` command requires approval (not just a narrow destructive-match
+  list); an explicit `auto` policy override opts out.
+- **Terminal sessions are contained to the workspace.** A session cannot be anchored outside
+  the workspace (e.g. `C:\Windows`), and cannot `cd` out of it, closing a local RCE path.
 - **SQL is local-only**: `execute_sql_query` and `get_database_schema` only reach a
   workspace-local SQLite file. Remote schemes and paths outside the workspace are
   rejected; read-only statements run unprompted, writes require approval.
+- **`fetch_url` is SSRF-safe.** The hostname is resolved and only public addresses are
+  allowed; every redirect hop is re-validated, so a fetched page cannot bounce the client
+  into the internal network or the cloud metadata service.
 - `git push` keeps its separate explicit-confirmation flow and is not part of the
   per-request token gate.
