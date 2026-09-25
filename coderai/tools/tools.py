@@ -1255,6 +1255,8 @@ def tool_read_file(
         if not p.exists():
             return f"File does not exist: {path}"
         content = p.read_text(encoding="utf-8", errors="replace")
+        
+        _emit_tool_event({"type": "file_opened", "path": path, "content": content})
 
         # LeanCTX outline/map mode
         mode_str = str(mode or "raw").lower()
@@ -1300,6 +1302,9 @@ def tool_write_file(path: str, content: str) -> str:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         _update_code_index(path)
+        
+        _emit_tool_event({"type": "file_diff", "path": path, "diff": preview})
+        
         commit_hash = ""
         if manager.is_repo() and AUTO_COMMIT:
             commit_hash = manager.stage_and_commit([path], f"Update {path} with CoderAI")
@@ -1930,6 +1935,9 @@ def tool_replace_in_file(path: str, old: str, new: str, regex: bool = False, cou
         _gate_approval("replace_in_file", arguments, preview, "diff")
         p.write_text(updated, encoding="utf-8")
         _update_code_index(path)
+        
+        _emit_tool_event({"type": "file_diff", "path": path, "diff": preview})
+        
         commit_hash = ""
         if manager.is_repo() and AUTO_COMMIT:
             commit_hash = manager.stage_and_commit([path], f"Update {path} with CoderAI")
@@ -2013,6 +2021,7 @@ def tool_delete_file(path: str) -> str:
         _gate_approval("delete_file", arguments, preview, "diff")
         p.unlink()
         _update_code_index(path, deleted=True)
+        _emit_tool_event({"type": "file_diff", "path": path, "diff": preview})
         return f"Deleted: {path}"
     except ToolApprovalRequired:
         raise
@@ -2044,7 +2053,33 @@ def tool_search_codebase(query: str, top_k: int = 5) -> str:
 def tool_get_project_overview() -> str:
     try:
         overview = get_codebase_index(get_workspace()).get_project_overview()
-        sections = ["# Project overview", overview["summary"]]
+        
+        summary_text = overview.get("summary", "")
+        # If the summary is JSON, format it nicely so the agent doesn't regurgitate raw JSON
+        if summary_text.strip().startswith("{") and summary_text.strip().endswith("}"):
+            try:
+                import json
+                parsed = json.loads(summary_text)
+                if isinstance(parsed, dict):
+                    lines = []
+                    for k, v in parsed.items():
+                        lines.append(f"### {str(k).replace('_', ' ').title()}")
+                        if isinstance(v, list):
+                            for item in v:
+                                if isinstance(item, dict) and "path" in item and "summary" in item:
+                                    lines.append(f"- **{item['path']}**: {item['summary']}")
+                                else:
+                                    lines.append(f"- {item}")
+                        elif isinstance(v, dict):
+                            for sub_k, sub_v in v.items():
+                                lines.append(f"- **{sub_k}**: {sub_v}")
+                        else:
+                            lines.append(str(v))
+                    summary_text = "\n".join(lines)
+            except Exception:
+                pass
+                
+        sections = ["# Project overview", summary_text]
         if overview["key_files"]:
             sections.append("\n## Entry points and key files")
             sections.extend(f"- `{item['file_path']}`: {item['summary']}" for item in overview["key_files"])

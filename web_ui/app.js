@@ -1738,10 +1738,37 @@ function appendStreamingAssistant() {
   return article.querySelector(".stream-content");
 }
 
-function appendToolStatus(name, text) {
+function appendToolStatus(name, text, args = null, isResult = false) {
   let summary = name;
-  if (name === 'run_command' || name === 'run_bash') summary = 'Running command...';
-  else if (name === 'replace_in_file' || name === 'write_file') summary = 'Editing file...';
+  let icon = "⚙️";
+  
+  if (name === 'run_command' || name === 'run_bash' || name === 'run_powershell' || name === 'mcp_core_run_command') {
+      icon = "💻";
+      summary = "Executed command";
+      if (args && args.command) summary += `: ${args.command}`;
+      else if (args && args.CommandLine) summary += `: ${args.CommandLine}`;
+  } else if (name === 'replace_in_file' || name === 'write_file' || name === 'edit_file' || name === 'replace_file_content' || name === 'write_to_file') {
+      icon = "📝";
+      summary = "Edited file";
+      if (args && args.path) summary += `: ${args.path}`;
+      else if (args && args.TargetFile) summary += `: ${args.TargetFile}`;
+  } else if (name === 'read_file' || name === 'view_file' || name === 'mcp_core_view_file') {
+      icon = "🔍";
+      summary = "Read file";
+      if (args && args.path) summary += `: ${args.path}`;
+      else if (args && args.AbsolutePath) summary += `: ${args.AbsolutePath}`;
+  } else if (name === 'list_dir' || name === 'find_by_name' || name === 'grep_search' || name === 'mcp_core_list_dir' || name === 'mcp_core_grep_search') {
+      icon = "📂";
+      summary = "Searched";
+      if (args && (args.DirectoryPath || args.SearchDirectory || args.SearchPath)) {
+          summary += `: ${args.DirectoryPath || args.SearchDirectory || args.SearchPath}`;
+      }
+  } else if (name === 'ask_question') {
+      icon = "❓";
+      summary = "Asked question";
+  }
+
+  const displayName = summary.replace(/_/g, " ").replace(/^\w/, c => c.toUpperCase());
   
   // We insert a live streaming tool report above the text message so RTL isn't broken
   const streamingArticle = document.querySelector(".message.assistant.streaming");
@@ -1760,10 +1787,33 @@ function appendToolStatus(name, text) {
       return d;
   })();
   
-  const entry = document.createElement("details");
+  // Check if there is an existing pending tool for this name
+  let entry = toolsDiv.querySelector(`details[data-toolname="${escapeHtml(name)}"]:not(.completed)`);
+  if (isResult && entry) {
+      // Update existing entry with result
+      const pre = entry.querySelector("pre code");
+      if (pre) {
+          pre.innerHTML = escapeHtml(text);
+      }
+      entry.classList.add("completed");
+      entry.open = false; // Auto close on complete to save space
+      return entry;
+  }
+
+  entry = document.createElement("details");
   entry.className = "antigravity-tool";
+  entry.setAttribute("data-toolname", name);
   entry.open = true; // Streaming tools default open so you can read them
-  entry.innerHTML = `<summary>${escapeHtml(summary)} &gt;</summary><pre><code>${escapeHtml(text)}</code></pre>`;
+  
+  if (isResult) {
+      // Fallback if result arrived without call
+      entry.innerHTML = `<summary>${icon} ${escapeHtml(displayName)} (Result)</summary><pre><code>${escapeHtml(text)}</code></pre>`;
+      entry.open = false;
+      entry.classList.add("completed");
+  } else {
+      entry.innerHTML = `<summary>${icon} ${escapeHtml(displayName)}</summary><pre><code>${escapeHtml(text)}</code></pre>`;
+  }
+  
   toolsDiv.appendChild(entry);
   $("messages").scrollTop = $("messages").scrollHeight;
 }
@@ -2103,9 +2153,9 @@ function dispatchStreamEvent(event, ctx) {
     ctx.appendToken(event.content || "");
   } else if (event.type === "tool_call") {
     setLoading(true, `Running ${event.name}...`);
-    appendToolStatus(event.name, JSON.stringify(event.args || {}, null, 2));
+    appendToolStatus(event.name, JSON.stringify(event.args || {}, null, 2), event.args, false);
   } else if (event.type === "tool_result") {
-    appendToolStatus(`${event.name} result`, String(event.result || "").slice(0, 1200));
+    appendToolStatus(event.name, String(event.result || "").slice(0, 1200), null, true);
   } else if (event.type === "skill_selected" || event.type === "skill_applied" || event.type === "skill_failed") {
     // Hidden from chat feed per user request (skills are maintained in the Skills tab)
   } else if (event.type === "approval_required") {
@@ -2115,6 +2165,26 @@ function dispatchStreamEvent(event, ctx) {
     setLoading(true, `Reviewing changes to ${event.args?.path || "file"}`);
     showApproval(event, true);
     showEditorView("git");
+  } else if (event.type === "file_opened") {
+    showWorkbench();
+    activateTab("files");
+    showEditorView("code");
+    setCodeEditorContent(
+      event.path,
+      "Agent read this file",
+      event.content,
+      event.path.split('.').pop()
+    );
+  } else if (event.type === "file_diff") {
+    showWorkbench();
+    activateTab("files");
+    showEditorView("code");
+    setCodeEditorContent(
+      event.path + " (Changes)",
+      "Agent modified this file",
+      event.diff,
+      "diff"
+    );
   } else if (event.type === "git_commit_created") {
     appendToolStatus("Git checkpoint", `${event.commit.slice(0, 8)} ${event.message}`);
   } else if (event.type === "git_checkpoint_created") {
