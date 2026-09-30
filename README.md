@@ -340,7 +340,12 @@ and FastAPI route parity are out of scope for now. See [docs/PLAN_MODE.md](docs/
 
 ## Features & Roadmap Status
 
-- [x] Per-tool and per-workspace approval policies (`approval_policy.py`).
+- [x] **Inline Tool Approvals & UI Enhancements**: Replaced blocking modals with non-intrusive inline tool execution approvals directly inside the chat feed.
+- [x] **Persistent Project History & Smart Navigation**: Chat history (including clickable File Cards that restore the editor view) is now saved per-project and restored automatically when switching workspaces.
+- [x] **LangChain Tool Iteration Fix**: Patched a critical bug in `agent_runtime.py` where LangChain's `tool_call_id` mapping failed on streaming custom models, preventing the "Agent stopped after 20 tool iterations" infinite loop.
+- [x] **Custom API Docker Stability**: Fixed Custom API connectivity inside Docker containers by auto-routing `localhost` to `host.docker.internal`.
+- [x] **Markdown Report Enforcement**: Updated the agent's core system prompt to enforce `.md` code blocks for analyses and reports, ensuring they extract correctly into the Editor panel.
+- [x] Per-tool and per-workspace approval policies (`approval_policy.py`). (`approval_policy.py`).
 - [x] Pull, fetch, branch switching, and merge-conflict assistance in Git History.
 - [x] Optional `sqlite-vec` acceleration for the SQLite semantic fallback.
 - [x] LeanCTX-inspired token compression, structural AST code outlining, and history code compaction.
