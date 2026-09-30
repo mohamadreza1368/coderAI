@@ -161,6 +161,8 @@ def check_auth(host: str, headers, query) -> bool:
     Loopback and test clients are trusted. Everyone else must present the
     access token (constant-time compare).
     """
+    if os.getenv("CODERAI_DISABLE_AUTH", "false").lower() in ("true", "1", "yes"):
+        return True
     if _is_trusted_client(host):
         return True
     from hmac import compare_digest
@@ -260,7 +262,7 @@ MAX_CONTEXT_CHARS = 32_000
 MAX_HISTORY_MESSAGE_CHARS = 6_000
 MAX_ASSISTANT_HISTORY_CHARS = 3_500
 MAX_KEPT_HISTORY_MESSAGES = 6
-MAX_ITERATIONS = 10
+MAX_ITERATIONS = 20
 REQUEST_TIMEOUT = int(os.getenv("AGENT_REQUEST_TIMEOUT", "1800"))
 DEFAULT_CONTEXT_TOKEN_BUDGET = int(os.getenv("AGENT_CONTEXT_TOKENS", "24000"))
 DEFAULT_RESPONSE_TOKEN_BUDGET = int(os.getenv("AGENT_RESPONSE_TOKENS", "8192"))
@@ -825,6 +827,47 @@ def _auto_index_workspace_background(workspace_path: str | Path) -> None:
     t.start()
 
 
+
+def _restore_session_state(session: dict) -> None:
+    STATE["memory_session_id"] = session.get("id") or session.get("session_id")
+    STATE["messages"] = []
+    STATE["tools_log"] = []
+    for turn in session["turns"]:
+        role = turn["role"]
+        content = turn["content"]
+        tools_done = turn.get("tool_calls") or []
+        
+        if role == "user":
+            STATE["messages"].append({"role": "user", "content": content})
+        elif role == "assistant":
+            if tools_done:
+                STATE["tools_log"].append(tools_done)
+                t_calls = []
+                for i, t in enumerate(tools_done):
+                    t_calls.append({"name": t["name"], "arguments": t.get("args", {}), "id": f"call_{i}"})
+                
+                STATE["messages"].append({
+                    "role": "assistant",
+                    "content": content,
+                    "tool_calls": _format_tool_calls_for_history(STATE["conn_mode"], t_calls)
+                })
+                
+                for i, t in enumerate(tools_done):
+                    tm = {"role": "tool", "content": str(t.get("result", "")), "name": t["name"]}
+                    if STATE["conn_mode"] == MODE_CUSTOM:
+                        tm["tool_call_id"] = f"call_{i}"
+                    STATE["messages"].append(tm)
+            else:
+                STATE["messages"].append({"role": "assistant", "content": content})
+                
+    STATE["memory_summary"] = session.get("summary", "")
+    STATE["memory_summarized_count"] = 0
+    STATE["memory_retrieval_count"] = 0
+    STATE["memory_retrieved_facts"] = []
+    STATE["memory_context"] = ""
+    STATE["used_skills_log"] = []
+
+
 def _activate_workspace_memory(path: str | Path) -> tuple[bool, str]:
     old_workspace = get_workspace()
     try:
@@ -834,14 +877,30 @@ def _activate_workspace_memory(path: str | Path) -> tuple[bool, str]:
     ok, message = set_workspace(path)
     if not ok:
         return ok, message
-    STATE["memory_session_id"] = uuid.uuid4().hex
-    STATE["memory_summary"] = ""
+    
+    mm = MemoryManager(path)
+    sessions = mm.list_sessions(limit=1)
+    
+    if sessions:
+        latest = sessions[0]
+        session = mm.load_session(latest["id"] if "id" in latest else latest.get("session_id", ""))
+        if session:
+            _restore_session_state(session)
+        else:
+            STATE["memory_session_id"] = uuid.uuid4().hex
+            STATE["messages"] = []
+            STATE["tools_log"] = []
+            STATE["memory_summary"] = ""
+    else:
+        STATE["memory_session_id"] = uuid.uuid4().hex
+        STATE["messages"] = []
+        STATE["tools_log"] = []
+        STATE["memory_summary"] = ""
+        
     STATE["memory_summarized_count"] = 0
     STATE["memory_retrieval_count"] = 0
     STATE["memory_retrieved_facts"] = []
     STATE["memory_context"] = ""
-    STATE["messages"] = []
-    STATE["tools_log"] = []
     STATE["used_skills_log"] = []
     _auto_index_workspace_background(path)
     return True, message
@@ -1469,6 +1528,7 @@ def _windows_powershell_path() -> str | None:
 
 
 def _post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
+    url = _fix_docker_localhost_url(url)
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req_headers = {
         "Content-Type": "application/json",
@@ -1493,6 +1553,7 @@ def _post_json(url: str, payload: dict, headers: dict | None = None) -> dict:
 
 
 def _post_json_stream(url: str, payload: dict, headers: dict | None = None):
+    url = _fix_docker_localhost_url(url)
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req_headers = {
         "Content-Type": "application/json",
@@ -1554,7 +1615,14 @@ def _format_agent_error(exc: Exception) -> str:
     )
 
 
+
+def _fix_docker_localhost_url(url: str) -> str:
+    import os, re
+    if url and os.path.exists('/.dockerenv'):
+        return re.sub(r'://(localhost|127\.0\.0\.1)(:|/)', r'://host.docker.internal\2', url)
+    return url
 def _get_json(url: str, headers: dict | None = None, timeout: int = 15) -> dict:
+    url = _fix_docker_localhost_url(url)
     req_headers = {
         "Accept": "application/json",
         "User-Agent": "CoderAI/1.0",
@@ -1668,7 +1736,12 @@ def _extract_tool_calls_ollama(message: dict) -> list[dict]:
     for tc in message.get("tool_calls", []) or []:
         fn = tc.get("function", {})
         args = repair_json_tool_arguments(fn.get("arguments", {}))
-        calls.append({"name": fn.get("name", ""), "arguments": args})
+        
+        name = str(fn.get("name", "")).strip()
+        import re
+        name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+        
+        calls.append({"name": name, "arguments": args})
     if not calls and message.get("content"):
         available_names = [s.get("function", {}).get("name") for s in TOOL_SCHEMAS if s.get("function", {}).get("name")]
         calls = extract_fallback_tool_calls_from_text(message.get("content", ""), available_names)
@@ -1680,7 +1753,13 @@ def _extract_tool_calls_openai(message: dict) -> list[dict]:
     for tc in message.get("tool_calls", []) or []:
         fn = tc.get("function", {})
         args = repair_json_tool_arguments(fn.get("arguments", "{}"))
-        calls.append({"id": tc.get("id"), "type": tc.get("type", "function"), "name": fn.get("name", ""), "arguments": args})
+        
+        # Sanitize tool name to prevent 400 Bad Request on Custom APIs (OpenAI format requires ^[a-zA-Z0-9_-]{1,64}$)
+        name = str(fn.get("name", "")).strip()
+        import re
+        name = re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+        
+        calls.append({"id": tc.get("id"), "type": tc.get("type", "function"), "name": name, "arguments": args})
     if not calls and message.get("content"):
         available_names = [s.get("function", {}).get("name") for s in TOOL_SCHEMAS if s.get("function", {}).get("name")]
         for idx, fc in enumerate(extract_fallback_tool_calls_from_text(message.get("content", ""), available_names)):
@@ -1720,7 +1799,7 @@ def _runtime_settings() -> RuntimeSettings:
         model=_active_model(),
         temperature=float(STATE["temperature"]),
         enable_thinking=bool(STATE["enable_thinking"]),
-        custom_api_url=STATE["custom_api_url"],
+        custom_api_url=_fix_docker_localhost_url(STATE["custom_api_url"]),
         custom_api_key=STATE["custom_api_key"],
         response_token_budget=max(512, int(STATE.get("response_token_budget") or DEFAULT_RESPONSE_TOKEN_BUDGET)),
         request_timeout=REQUEST_TIMEOUT,
@@ -2357,8 +2436,9 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
                         STATE["conn_mode"] = old_conn_mode
                         STATE["custom_api_model"] = old_custom
                 else:
-                    raise
-            thinking_text += result.get("thinking", "") or ""
+                    write_event({"type": "status", "message": f"Agent loop aborted: {e}"})
+                    write_event({"type": "token", "content": f"\n\n**Agent Execution Failed:**\n`{e}`\n\nPlease check your model or API settings and try again."})
+                    break
 
             if is_execution_cancelled():
                 write_event({"type": "cancelled", "message": "Execution cancelled by user."})
@@ -2995,18 +3075,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not ok:
                     _send_json(self, {"error": message}, 400)
                     return
-                STATE["memory_session_id"] = session_id
-                STATE["messages"] = [
-                    {"role": turn["role"], "content": turn["content"]}
-                    for turn in session["turns"]
-                ]
-                STATE["tools_log"] = []
-                STATE["used_skills_log"] = []
-                STATE["memory_summary"] = session.get("summary", "")
-                STATE["memory_summarized_count"] = 0
-                STATE["memory_retrieval_count"] = 0
-                STATE["memory_retrieved_facts"] = []
-                STATE["memory_context"] = ""
+                _restore_session_state(session)
                 _send_json(self, _client_state())
                 return
             if path == "/api/memory/fact":

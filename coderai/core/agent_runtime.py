@@ -132,6 +132,7 @@ class LangChainRuntime:
         from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
         messages = []
+        pending_tool_call_ids = []
         for index, item in enumerate(history):
             role = item.get("role")
             content = item.get("content") or ""
@@ -139,17 +140,28 @@ class LangChainRuntime:
                 messages.append(SystemMessage(content=content))
             elif role == "assistant":
                 tool_calls = []
+                pending_tool_call_ids.clear()
                 for tc_index, call in enumerate(item.get("tool_calls") or []):
                     fn = call.get("function") or {}
                     args = repair_json_tool_arguments(fn.get("arguments", {}))
+                    
+                    tc_id = call.get("id")
+                    if not tc_id:
+                        tc_id = f"call_{index}_{tc_index}"
+                        
                     tool_calls.append({
                         "name": fn.get("name", ""),
                         "args": args,
-                        "id": call.get("id") or f"call_{index}_{tc_index}",
+                        "id": tc_id,
                     })
+                    pending_tool_call_ids.append(tc_id)
                 messages.append(AIMessage(content=content, tool_calls=tool_calls))
             elif role == "tool":
-                tool_call_id = item.get("tool_call_id") or f"call_{index}"
+                if pending_tool_call_ids:
+                    tool_call_id = pending_tool_call_ids.pop(0)
+                else:
+                    tool_call_id = item.get("tool_call_id") or f"call_{index}"
+                        
                 message = ToolMessage(
                     content=content,
                     name=item.get("name"),

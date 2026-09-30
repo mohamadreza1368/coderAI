@@ -629,6 +629,7 @@ async function openProjectInEditor(startSession = false) {
   if (!path) return;
   const result = await api("/api/workspace", { method: "POST", body: JSON.stringify({ path }) });
   if (!result.ok) throw new Error(result.message || "Could not open project");
+  setCodeEditorContent("", "", "");
   renderState(await api("/api/state"));
   if (startSession) renderState(await api("/api/clear", { method: "POST", body: JSON.stringify({}) }));
   checkEmbeddingModelStatus();
@@ -1213,6 +1214,87 @@ function renderDiffPreview(diff) {
   }).join("");
 }
 
+function showInlineApproval(event, isGitDiff = false) {
+  state.pendingApprovalType = isGitDiff ? "git" : "tool";
+  state.pendingApprovalToken = event.token || "";
+
+  const id = "approval-" + Date.now();
+  const title = isGitDiff ? "Review File Change" : "Execution Approval Required";
+  
+  let previewHtml = "";
+  if (isGitDiff) {
+    previewHtml = `<pre class="approval-preview diff-preview">${renderDiffPreview(event.preview)}</pre>`;
+  } else {
+    previewHtml = `<pre class="approval-preview">${escapeHtml(event.preview || "")}</pre>`;
+  }
+
+  let policyHtml = "";
+  if (event.reason) {
+    policyHtml = `<div class="approval-meta">
+      <span class="approval-label">Policy</span>
+      <span style="font-size:12px;color:var(--amber);line-height:1.4;">${escapeHtml(event.reason)}</span>
+    </div>`;
+  }
+
+  const html = `
+    <div class="chat-message system" id="${id}">
+      <div class="approval-card" style="margin:10px 0; width:100% !important; max-width:100% !important; border:1px solid var(--amber) !important; background:var(--surface) !important; box-shadow:none !important; padding:16px !important;">
+        <div class="approval-header">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="width:20px;height:20px;color:#f59e0b"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <strong>${title}</strong>
+        </div>
+        <div class="approval-body">
+          <div class="approval-meta">
+            <span class="approval-label">Tool</span>
+            <code>${escapeHtml(event.name || "tool")}</code>
+          </div>
+          <div class="approval-meta">
+            <span class="approval-label">Workspace</span>
+            <code>${escapeHtml(state.data?.workspace?.path || "")}</code>
+          </div>
+          ${policyHtml}
+          <div class="approval-label" style="margin-top:10px;">Command / Code preview</div>
+          ${previewHtml}
+          <label class="approval-always" style="margin-top:10px; display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;">
+            <input type="checkbox" id="${id}-always" style="width:16px; height:16px; margin:0; accent-color:var(--amber); cursor:pointer;">
+            Always allow for this session
+          </label>
+        </div>
+        <div class="approval-actions" style="margin-top:12px;">
+          <button type="button" class="ghost" onclick="resolveInlineApproval(false, '${id}')">Reject</button>
+          <button type="button" class="primary" onclick="resolveInlineApproval(true, '${id}')">Approve and run</button>
+        </div>
+      </div>
+    </div>
+  `;
+  $("chatFeed").insertAdjacentHTML("beforeend", html);
+  scrollToBottom();
+}
+
+async function resolveInlineApproval(approved, id) {
+  const alwaysChecked = $(id + "-always").checked;
+  const prefix = state.pendingApprovalType === "git" ? "/api/git" : "/api/approval";
+  const endpoint = approved ? "approve" : "reject";
+  const body = approved
+    ? { always_allow_for_session: alwaysChecked, token: state.pendingApprovalToken || "" }
+    : { reason: "Rejected by user", token: state.pendingApprovalToken || "" };
+
+  const card = $(id);
+  if (card) {
+    card.style.opacity = "0.5";
+    card.style.pointerEvents = "none";
+  }
+
+  setLoading(false);
+  state.pendingApprovalType = null;
+  state.pendingApprovalToken = null;
+
+  await api(`${prefix}/${endpoint}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 function showApproval(event, isGitDiff = false) {
   state.pendingApprovalType = isGitDiff ? "git" : "tool";
   state.pendingApprovalToken = event.token || "";
@@ -1581,7 +1663,39 @@ function renderMessages() {
     const assistantIndex = messages.slice(0, index + 1).filter((m) => m.role === "assistant").length - 1;
     const tools = msg.role === "assistant" && toolsLog[assistantIndex] ? toolsLog[assistantIndex] : [];
     const toolHtml = tools.length ? `<div class="chat-tools">${tools.map((t) => {
-      let summary = t.name;
+        const fileOps = ['read_file', 'write_file', 'write_to_file', 'replace_in_file', 'append_file', 'replace_file_content'];
+        if (fileOps.includes(t.name)) {
+            const path = t.args.file_path || t.args.path || t.args.TargetFile || 'file';
+            const title = path.split(/[\/]/).pop();
+            const lang = t.name.includes("replace") || t.name === "append_file" ? "diff" : path.split('.').pop();
+            let subtitle = "Agent edited this file";
+            let content = "";
+            
+            if (t.name === "read_file") { subtitle = "Agent read this file"; content = String(t.result || ""); }
+            else if (t.name === "write_file" || t.name === "write_to_file") { subtitle = "Agent created this file"; content = t.args.code || t.args.content || t.args.CodeContent || ""; }
+            else { content = t.args.replacement_content || t.args.ReplacementContent || t.args.content || String(t.result || ""); }
+            
+            const id = "file-" + Date.now() + Math.floor(Math.random()*100000);
+            if (!window._fileCache) window._fileCache = {};
+            window._fileCache[id] = { path, subtitle, content, lang };
+            
+            const icon = lang === "diff" 
+              ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`
+              : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`;
+
+            return `
+              <div class="file-card" onclick="reopenFileCache('${id}')" style="cursor:pointer; display:flex; align-items:center; gap:12px; background:rgba(96, 165, 250, 0.08); border:1px solid rgba(96, 165, 250, 0.2); border-radius:8px; padding:10px 14px; margin-bottom:6px; transition:background 0.2s;" onmouseover="this.style.background='rgba(96, 165, 250, 0.15)'" onmouseout="this.style.background='rgba(96, 165, 250, 0.08)'">
+                <div style="color:var(--teal); display:flex;">${icon}</div>
+                <div style="flex:1; min-width:0; text-align:left;">
+                  <div style="font-weight:600; font-size:13px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(title)}</div>
+                  <div style="font-size:11px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(subtitle)}</div>
+                </div>
+                <div style="color:var(--text-dim); font-size:11px; background:rgba(0,0,0,0.2); padding:4px 8px; border-radius:4px;">Click to view</div>
+              </div>
+            `;
+        }
+
+        let summary = t.name;
       if (t.name === 'run_bash' || t.name === 'run_command') {
           const cmd = t.args.command || '';
           summary = 'Run command: ' + (cmd.length > 50 ? cmd.slice(0, 50) + '...' : cmd);
@@ -1738,7 +1852,80 @@ function appendStreamingAssistant() {
   return article.querySelector(".stream-content");
 }
 
+function appendFileCard(path, subtitle, content, lang) {
+  const id = "file-" + Date.now() + Math.floor(Math.random()*1000);
+  const title = path.split(/[/\\]/).pop();
+  
+  if (!window._fileCache) window._fileCache = {};
+  window._fileCache[id] = { path, subtitle, content, lang };
+
+  const icon = lang === "diff" 
+    ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`
+    : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`;
+
+  const html = `
+    <div class="chat-message system" style="padding-top:4px; padding-bottom:4px;">
+      <div class="file-card" onclick="reopenFileCache('${id}')" style="cursor:pointer; display:flex; align-items:center; gap:12px; background:rgba(96, 165, 250, 0.08); border:1px solid rgba(96, 165, 250, 0.2); border-radius:8px; padding:10px 14px; transition:background 0.2s;" onmouseover="this.style.background='rgba(96, 165, 250, 0.15)'" onmouseout="this.style.background='rgba(96, 165, 250, 0.08)'">
+        <div style="color:var(--teal); display:flex;">${icon}</div>
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:600; font-size:13px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(title)}</div>
+          <div style="font-size:11px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(subtitle)}</div>
+        </div>
+        <div style="color:var(--text-dim); font-size:11px; background:rgba(0,0,0,0.2); padding:4px 8px; border-radius:4px;">Click to view</div>
+      </div>
+    </div>
+  `;
+  $("chatFeed").insertAdjacentHTML("beforeend", html);
+  scrollToBottom();
+}
+
+window.reopenFileCache = function(id) {
+  const data = window._fileCache[id];
+  if (!data) return;
+  showWorkbench();
+  activateTab("files");
+  showEditorView("code");
+  setCodeEditorContent(data.path + (data.lang === "diff" ? " (Changes)" : ""), data.subtitle, data.content, data.lang);
+};
+
 function appendToolStatus(name, text, args = null, isResult = false) {
+  const fileOps = ['read_file', 'write_file', 'write_to_file', 'replace_in_file', 'append_file', 'replace_file_content'];
+  if (isResult && fileOps.includes(name) && args) {
+      const path = args.file_path || args.path || args.TargetFile || 'file';
+      const title = path.split(/[\/]/).pop();
+      const lang = name.includes("replace") || name === "append_file" ? "diff" : path.split('.').pop();
+      let subtitle = "Agent edited this file";
+      let content = "";
+      
+      if (name === "read_file") { subtitle = "Agent read this file"; content = String(text || ""); }
+      else if (name === "write_file" || name === "write_to_file") { subtitle = "Agent created this file"; content = args.code || args.content || args.CodeContent || ""; }
+      else { content = args.replacement_content || args.ReplacementContent || args.content || String(text || ""); }
+      
+      const id = "file-" + Date.now() + Math.floor(Math.random()*100000);
+      if (!window._fileCache) window._fileCache = {};
+      window._fileCache[id] = { path, subtitle, content, lang };
+      
+      const icon = lang === "diff" 
+        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`
+        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>`;
+
+      const html = `
+        <div class="chat-message system" style="padding-top:4px; padding-bottom:4px;">
+          <div class="file-card" onclick="reopenFileCache('${id}')" style="cursor:pointer; display:flex; align-items:center; gap:12px; background:rgba(96, 165, 250, 0.08); border:1px solid rgba(96, 165, 250, 0.2); border-radius:8px; padding:10px 14px; transition:background 0.2s;" onmouseover="this.style.background='rgba(96, 165, 250, 0.15)'" onmouseout="this.style.background='rgba(96, 165, 250, 0.08)'">
+            <div style="color:var(--teal); display:flex;">${icon}</div>
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:600; font-size:13px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(title)}</div>
+              <div style="font-size:11px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(subtitle)}</div>
+            </div>
+            <div style="color:var(--text-dim); font-size:11px; background:rgba(0,0,0,0.2); padding:4px 8px; border-radius:4px;">Click to view</div>
+          </div>
+        </div>
+      `;
+      $("chatFeed").insertAdjacentHTML("beforeend", html);
+      scrollToBottom();
+      return;
+  }
+
   let summary = name;
   let icon = "⚙️";
   
@@ -1957,6 +2144,7 @@ async function openWorkspace() {
     method: "POST",
     body: JSON.stringify({ path: $("workspaceInput").value.trim() }),
   });
+  setCodeEditorContent("", "", "");
   renderState(data);
 }
 
@@ -2160,12 +2348,14 @@ function dispatchStreamEvent(event, ctx) {
     // Hidden from chat feed per user request (skills are maintained in the Skills tab)
   } else if (event.type === "approval_required") {
     setLoading(true, `Waiting for approval: ${event.name}`);
-    showApproval(event, false);
+    showInlineApproval(event, false);
   } else if (event.type === "git_diff_preview") {
     setLoading(true, `Reviewing changes to ${event.args?.path || "file"}`);
-    showApproval(event, true);
+    showInlineApproval(event, true);
     showEditorView("git");
   } else if (event.type === "file_opened") {
+    const lang = event.path.split('.').pop();
+    appendFileCard(event.path, "Agent read this file", event.content, lang);
     showWorkbench();
     activateTab("files");
     showEditorView("code");
@@ -2173,9 +2363,10 @@ function dispatchStreamEvent(event, ctx) {
       event.path,
       "Agent read this file",
       event.content,
-      event.path.split('.').pop()
+      lang
     );
   } else if (event.type === "file_diff") {
+    appendFileCard(event.path, "Agent modified this file", event.diff, "diff");
     showWorkbench();
     activateTab("files");
     showEditorView("code");

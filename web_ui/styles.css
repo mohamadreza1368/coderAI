@@ -2785,3 +2785,4 @@ body.loading .loading-overlay { display: block; }
   direction: ltr;
   text-align: left;
 }
+.antigravity-tool.completed summary::after { content: ' \2713'; color: #4ade80; float: right; font-weight: bold; }

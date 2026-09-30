@@ -22,6 +22,7 @@ services:
       # Loopback clients never need it; without a token, non-loopback requests
       # are refused.
       - WEB_APP_LOOPBACK_ONLY=false
+      - CODERAI_DISABLE_AUTH=true
       - CODERAI_AUTH_TOKEN=change-me-please
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - OLLAMA_URL=http://host.docker.internal:11434/api/generate

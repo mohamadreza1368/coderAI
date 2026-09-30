@@ -8,6 +8,36 @@ _no_proxy = os.getenv("NO_PROXY", "localhost,127.0.0.1,::1,host.docker.internal"
 os.environ["NO_PROXY"] = _no_proxy
 os.environ["no_proxy"] = _no_proxy
 
+def _auto_discover_proxy():
+    if os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY"):
+        return  # user explicitly set it
+    
+    import socket
+    proxy_ports = [10808, 10809, 2080, 2081, 10811, 7890, 7891]
+    host = "host.docker.internal"
+    
+    try:
+        socket.gethostbyname(host)
+    except Exception:
+        host = "127.0.0.1"
+        
+    for port in proxy_ports:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.1)
+            try:
+                if s.connect_ex((host, port)) == 0:
+                    proxy_url = f"http://{host}:{port}"
+                    os.environ["HTTP_PROXY"] = proxy_url
+                    os.environ["HTTPS_PROXY"] = proxy_url
+                    os.environ["http_proxy"] = proxy_url
+                    os.environ["https_proxy"] = proxy_url
+                    print(f"[CoderAI] Auto-detected proxy on {proxy_url}")
+                    break
+            except Exception:
+                pass
+
+_auto_discover_proxy()
+
 os.environ["OLLAMA_HOST"] = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
 
 # Keep LiteLLM fully local for token counting.

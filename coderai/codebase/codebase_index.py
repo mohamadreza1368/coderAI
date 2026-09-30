@@ -597,7 +597,8 @@ class CodebaseIndex:
         if model and overview["nodes"]:
             prompt = (
                 "Write a concise project architecture overview from this structural analysis. "
-                "Explain the purpose, major modules, entry points, and how files collaborate. Do not invent details.\n\n"
+                "Explain the purpose, major modules, entry points, and how files collaborate. Do not invent details.\n"
+                "IMPORTANT: Output your summary as plain text/Markdown paragraphs. DO NOT output raw JSON.\n\n"
                 + overview["summary"]
             )
             improved = self.summarizer.improve_with_local_model(prompt, model)

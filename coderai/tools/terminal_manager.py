@@ -65,6 +65,7 @@ class TerminalSession:
         self.cols = max(10, cols)
         self.pty_proc: winpty.PtyProcess | None = None
         self.active_process: subprocess.Popen | None = None
+        self.master_fd = None
         self.output_queue: queue.Queue[dict] = queue.Queue()
         self._subscribers: set[Any] = set()
         self._subscribers_lock = threading.Lock()
@@ -164,29 +165,57 @@ class TerminalSession:
                 except Exception as exc:
                     self.output_queue.put({"type": "output", "text": f"\r\n[WinPTY error: {exc}]\r\n", "data": f"\r\n[WinPTY error: {exc}]\r\n"})
 
-            # Fallback to standard subprocess
+            # Fallback to Linux PTY or standard subprocess
             try:
                 env = os.environ.copy()
                 env["PYTHONUNBUFFERED"] = "1"
                 env["PYTHONIOENCODING"] = "utf-8"
                 env["TERM"] = "xterm-256color"
 
-                self.active_process = subprocess.Popen(
-                    shell_args,
-                    cwd=str(self.cwd),
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=0,
-                    universal_newlines=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    env=env,
-                )
-                self._is_running = True
-                self._reader_thread = threading.Thread(target=self._proc_reader, daemon=True)
-                self._reader_thread.start()
+                if os.name != "nt":
+                    import pty
+                    import termios
+                    import struct
+                    import fcntl
+                    master_fd, slave_fd = pty.openpty()
+                    self.master_fd = master_fd
+                    
+                    try:
+                        winsize = struct.pack("HHHH", self.rows, self.cols, 0, 0)
+                        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+                    except Exception:
+                        pass
+                        
+                    self.active_process = subprocess.Popen(
+                        shell_args,
+                        cwd=str(self.cwd),
+                        stdin=slave_fd,
+                        stdout=slave_fd,
+                        stderr=slave_fd,
+                        env=env,
+                        preexec_fn=os.setsid,
+                    )
+                    os.close(slave_fd)
+                    self._is_running = True
+                    self._reader_thread = threading.Thread(target=self._pty_linux_reader, daemon=True)
+                    self._reader_thread.start()
+                else:
+                    self.active_process = subprocess.Popen(
+                        shell_args,
+                        cwd=str(self.cwd),
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=0,
+                        universal_newlines=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        env=env,
+                    )
+                    self._is_running = True
+                    self._reader_thread = threading.Thread(target=self._proc_reader, daemon=True)
+                    self._reader_thread.start()
             except Exception as exc:
                 self._is_running = False
                 self.output_queue.put({"type": "output", "text": f"\r\n[Process error: {exc}]\r\n", "data": f"\r\n[Process error: {exc}]\r\n"})
@@ -212,6 +241,32 @@ class TerminalSession:
                 break
             except Exception:
                 time.sleep(0.01)
+    def _pty_linux_reader(self) -> None:
+        import os
+        while True:
+            proc = self.active_process
+            if getattr(self, "master_fd", None) is None:
+                break
+            if not proc or proc.poll() is not None:
+                break
+            try:
+                data_bytes = os.read(self.master_fd, 1024)
+                if data_bytes:
+                    data = data_bytes.decode("utf-8", errors="replace")
+                    clean = VT_QUERY_FILTER.sub("", data)
+                    if clean:
+                        self._broadcast({"type": "raw", "data": clean, "text": clean})
+                        with self._buffer_lock:
+                            self.output_buffer.append(clean)
+                            if len(self.output_buffer) > 1000:
+                                self.output_buffer.pop(0)
+                else:
+                    break
+            except OSError:
+                break
+            except Exception:
+                time.sleep(0.01)
+
         with self._lock:
             self._is_running = False
 
@@ -264,6 +319,12 @@ class TerminalSession:
                     self.pty_proc.write(data)
                 except Exception:
                     pass
+            elif getattr(self, "master_fd", None) is not None:
+                try:
+                    import os
+                    os.write(self.master_fd, data.encode("utf-8"))
+                except Exception:
+                    pass
             elif self.active_process and self.active_process.poll() is None and self.active_process.stdin:
                 try:
                     self.active_process.stdin.write(data)
@@ -292,6 +353,15 @@ class TerminalSession:
                     self.pty_proc.setwinsize(self.rows, self.cols)
                 except Exception:
                     pass
+            elif getattr(self, "master_fd", None) is not None:
+                try:
+                    import struct
+                    import fcntl
+                    import termios
+                    winsize = struct.pack("HHHH", self.rows, self.cols, 0, 0)
+                    fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, winsize)
+                except Exception:
+                    pass
 
     def restart(self, shell_type: str | None = None) -> None:
         if shell_type:
@@ -305,6 +375,13 @@ class TerminalSession:
             except Exception:
                 pass
             self.pty_proc = None
+        if getattr(self, "master_fd", None) is not None:
+            try:
+                import os
+                os.close(self.master_fd)
+            except Exception:
+                pass
+            self.master_fd = None
         if self.active_process and self.active_process.poll() is None:
             try:
                 self.active_process.kill()
