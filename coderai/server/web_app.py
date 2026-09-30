@@ -2286,7 +2286,12 @@ def _run_agent_loop(api_messages: list[dict]) -> tuple[str, str, list[dict]]:
     tools_done: list[dict] = []
 
     auto_continues = 0
-    for _ in range(MAX_ITERATIONS):
+    for iteration in range(MAX_ITERATIONS):
+        if iteration == 7:
+            history.append({"role": "user", "content": "SYSTEM WARNING: You have used 7 tool iterations. Please wrap up your task and respond directly to the user without calling any more tools."})
+        elif iteration == 15:
+            history.append({"role": "user", "content": "CRITICAL SYSTEM WARNING: You are caught in a tool-calling loop! You MUST stop calling tools immediately and provide your final response to the user!"})
+            
         result = _call_model(history)
         thinking_text += result.get("thinking", "") or ""
         if result["tool_calls"]:
@@ -2409,6 +2414,11 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
     failed = False
     try:
         for iteration in range(MAX_ITERATIONS):
+            if iteration == 7:
+                history.append({"role": "user", "content": "SYSTEM WARNING: You have used 7 tool iterations. Please wrap up your task and respond directly to the user without calling any more tools."})
+            elif iteration == 15:
+                history.append({"role": "user", "content": "CRITICAL SYSTEM WARNING: You are caught in a tool-calling loop! You MUST stop calling tools immediately and provide your final response to the user!"})
+            
             if is_execution_cancelled():
                 write_event({"type": "cancelled", "message": "Execution cancelled by user."})
                 break
