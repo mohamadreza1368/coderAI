@@ -52,7 +52,8 @@ class LangChainRuntime:
     def invoke(self, history: list[dict], tools: list[dict], settings: RuntimeSettings) -> dict:
         model = self._build_model(settings, streaming=False)
         messages = self._to_langchain_messages(history)
-        response = model.bind_tools(tools).invoke(messages)
+        runnable = model.bind_tools(tools) if tools else model
+        response = runnable.invoke(messages)
         return self._normalize_response(response)
 
     def stream(
@@ -68,7 +69,8 @@ class LangChainRuntime:
         thinking_parts: list[str] = []
         aggregate = None
 
-        for chunk in model.bind_tools(tools).stream(messages):
+        runnable = model.bind_tools(tools) if tools else model
+        for chunk in runnable.stream(messages):
             from coderai.tools.tools import is_execution_cancelled
             if is_execution_cancelled():
                 write_event({"type": "cancelled", "message": "Stream cancelled by user."})

@@ -569,19 +569,10 @@ AGENT_WORKFLOW_PROMPT = """
 ## Agent Workspace Workflow
 
 When the user asks for project work:
-1. For whole-project purpose, architecture, structure, or module-collaboration questions, use `get_project_overview`; do not answer from one retrieved file.
-2. For a specific implementation question, use `search_codebase`, then `get_related_files` when imports or callers matter.
-3. Use `scan_project` or `list_files` for a raw inventory when the index is unavailable.
-4. Read the relevant files before changing anything.
-5. Make the requested code changes with the available tools.
-6. Use `search_files`, `read_many_files`, `replace_in_file`, and `project_tree` when they make codebase work faster and more precise.
-7. If Tavily web tools are enabled, use `web_search` for current internet information and `extract_url` when the user gives a URL or asks for web-backed research. If they are not available, explain that Tavily must be enabled in Settings.
-8. For large code changes, write/edit files with tools instead of printing entire files in chat.
-9. In the final answer, clearly report:
-   - what changed
-   - which files were changed
-   - any command/test result you ran
-If you did not change files, say that explicitly.
+1. For general questions, analysis, or architectural overviews, retrieve context with at most one overview tool (e.g. `get_project_overview`), then directly explain your findings in detail.
+2. Do not invoke Git tools unless the user explicitly requests Git or version control actions.
+3. When code changes are explicitly requested, make precise modifications using `replace_in_file` or `write_file`.
+4. After completing any necessary file changes, conclude your turn by reporting what was changed. Do not continue calling tools in a loop.
 ---
 """
 
@@ -594,14 +585,26 @@ def _json_default(value):
     return str(value)
 
 
-def _active_tool_schemas() -> list[dict]:
+def _active_tool_schemas(current_prompt: str = "") -> list[dict]:
     tavily_names = {"web_search", "extract_url"}
-    if STATE.get("tavily_enabled") and STATE.get("tavily_api_key"):
-        return TOOL_SCHEMAS
-    return [
-        schema for schema in TOOL_SCHEMAS
-        if schema.get("function", {}).get("name") not in tavily_names
-    ]
+    git_names = {"git_status", "git_log", "git_diff", "git_commit", "git_checkout"}
+
+    prompt_to_check = (current_prompt or str(STATE.get("current_prompt") or "")).lower()
+    git_keywords = ["git", "commit", "branch", "stash", "checkout", "diff", "push", "pull", "گیت", "کامیت", "برنچ", "مخزن"]
+    needs_git = any(kw in prompt_to_check for kw in git_keywords)
+
+    schemas = []
+    for schema in TOOL_SCHEMAS:
+        name = schema.get("function", {}).get("name")
+        if not name:
+            continue
+        if name in tavily_names:
+            if not (STATE.get("tavily_enabled") and STATE.get("tavily_api_key")):
+                continue
+        if name in git_names and not needs_git:
+            continue
+        schemas.append(schema)
+    return schemas
 
 
 def _sync_tool_settings() -> None:
@@ -1806,46 +1809,51 @@ def _runtime_settings() -> RuntimeSettings:
     )
 
 
-def _call_model(history: list[dict]) -> dict:
+def _call_model(history: list[dict], tools: list[dict] | None = None) -> dict:
     response_budget = max(512, int(STATE.get("response_token_budget") or DEFAULT_RESPONSE_TOKEN_BUDGET))
     conn_mode = STATE["conn_mode"]
     is_custom = "custom" in str(conn_mode).lower()
+    active_tools = _active_tool_schemas() if tools is None else tools
     if _use_langchain_runtime() and lc_runtime.supports(conn_mode):
-        return lc_runtime.invoke(history, _active_tool_schemas(), _runtime_settings())
+        return lc_runtime.invoke(history, active_tools, _runtime_settings())
 
     if not is_custom:
+        payload = {
+            "model": _active_model(),
+            "messages": history,
+            "think": bool(STATE["enable_thinking"]),
+            "stream": False,
+            "options": {"temperature": float(STATE["temperature"]), "num_predict": response_budget},
+        }
+        if active_tools:
+            payload["tools"] = active_tools
         data = _post_json(
             f'{os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")}/api/chat',
-            {
-                "model": _active_model(),
-                "messages": history,
-                "tools": _active_tool_schemas(),
-                "think": bool(STATE["enable_thinking"]),
-                "stream": False,
-                "options": {"temperature": float(STATE["temperature"]), "num_predict": response_budget},
-            },
+            payload,
         )
         msg = data.get("message", {})
         return {
             "content": msg.get("content", "") or "",
             "thinking": msg.get("thinking", "") or "",
-            "tool_calls": _extract_tool_calls_ollama(msg),
+            "tool_calls": _extract_tool_calls_ollama(msg) if active_tools else [],
             "finish_reason": data.get("done_reason") or "",
         }
 
     headers = {}
     if STATE["custom_api_key"]:
         headers["Authorization"] = f"Bearer {STATE['custom_api_key']}"
+    payload = {
+        "model": _active_model(),
+        "messages": history,
+        "temperature": float(STATE["temperature"]),
+        "stream": False,
+        "max_tokens": response_budget,
+    }
+    if active_tools:
+        payload["tools"] = active_tools
     data = _post_json(
         f"{STATE['custom_api_url'].rstrip('/')}/chat/completions",
-        {
-            "model": _active_model(),
-            "messages": history,
-            "tools": _active_tool_schemas(),
-            "temperature": float(STATE["temperature"]),
-            "stream": False,
-            "max_tokens": response_budget,
-        },
+        payload,
         headers=headers,
     )
     choices = data.get("choices", [])
@@ -1858,7 +1866,7 @@ def _call_model(history: list[dict]) -> dict:
     return {
         "content": content,
         "thinking": thinking,
-        "tool_calls": _extract_tool_calls_openai(msg),
+        "tool_calls": _extract_tool_calls_openai(msg) if active_tools else [],
         "finish_reason": finish_reason or "",
     }
 
@@ -1882,12 +1890,13 @@ def _merge_custom_tool_delta(tool_calls: dict, delta_calls: list[dict]) -> None:
             current["function"]["arguments"] += fn["arguments"]
 
 
-def _call_model_stream(history: list[dict], write_event) -> dict:
+def _call_model_stream(history: list[dict], write_event, tools: list[dict] | None = None) -> dict:
     response_budget = max(512, int(STATE.get("response_token_budget") or DEFAULT_RESPONSE_TOKEN_BUDGET))
     conn_mode = STATE["conn_mode"]
     is_custom = "custom" in str(conn_mode).lower()
+    active_tools = _active_tool_schemas() if tools is None else tools
     if _use_langchain_runtime() and _use_langchain_streaming_runtime() and lc_runtime.supports(conn_mode):
-        return lc_runtime.stream(history, _active_tool_schemas(), _runtime_settings(), write_event)
+        return lc_runtime.stream(history, active_tools, _runtime_settings(), write_event)
 
     content_parts: list[str] = []
     thinking_parts: list[str] = []
@@ -1895,16 +1904,18 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
     if not is_custom:
         tool_calls_raw: list[dict] = []
         finish_reason = ""
+        payload = {
+            "model": _active_model(),
+            "messages": history,
+            "think": bool(STATE["enable_thinking"]),
+            "stream": True,
+            "options": {"temperature": float(STATE["temperature"]), "num_predict": response_budget},
+        }
+        if active_tools:
+            payload["tools"] = active_tools
         for event in _post_json_stream(
             f'{os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")}/api/chat',
-            {
-                "model": _active_model(),
-                "messages": history,
-                "tools": _active_tool_schemas(),
-                "think": bool(STATE["enable_thinking"]),
-                "stream": True,
-                "options": {"temperature": float(STATE["temperature"]), "num_predict": response_budget},
-            },
+            payload,
         ):
             from coderai.tools.tools import is_execution_cancelled
             if is_execution_cancelled():
@@ -1920,12 +1931,12 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
             if content:
                 content_parts.append(content)
                 write_event({"type": "token", "content": content})
-            if msg.get("tool_calls"):
+            if active_tools and msg.get("tool_calls"):
                 tool_calls_raw.extend(msg.get("tool_calls") or [])
         return {
             "content": "".join(content_parts),
             "thinking": "".join(thinking_parts),
-            "tool_calls": _extract_tool_calls_ollama({"tool_calls": tool_calls_raw}),
+            "tool_calls": _extract_tool_calls_ollama({"tool_calls": tool_calls_raw}) if active_tools else [],
             "finish_reason": finish_reason,
         }
 
@@ -1934,16 +1945,18 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
         headers["Authorization"] = f"Bearer {STATE['custom_api_key']}"
     tool_call_deltas: dict[int, dict] = {}
     finish_reason = ""
+    payload = {
+        "model": _active_model(),
+        "messages": history,
+        "temperature": float(STATE["temperature"]),
+        "stream": True,
+        "max_tokens": response_budget,
+    }
+    if active_tools:
+        payload["tools"] = active_tools
     for event in _post_json_stream(
         f"{STATE['custom_api_url'].rstrip('/')}/chat/completions",
-        {
-            "model": _active_model(),
-            "messages": history,
-            "tools": _active_tool_schemas(),
-            "temperature": float(STATE["temperature"]),
-            "stream": True,
-            "max_tokens": response_budget,
-        },
+        payload,
         headers=headers,
     ):
         from coderai.tools.tools import is_execution_cancelled
@@ -1964,17 +1977,19 @@ def _call_model_stream(history: list[dict], write_event) -> dict:
         if content:
             content_parts.append(content)
             write_event({"type": "token", "content": content})
-        _merge_custom_tool_delta(tool_call_deltas, delta.get("tool_calls") or [])
+        if active_tools:
+            _merge_custom_tool_delta(tool_call_deltas, delta.get("tool_calls") or [])
 
     final_content = "".join(content_parts)
     if not final_content and thinking_parts:
         final_content = "".join(thinking_parts)
         write_event({"type": "token", "content": final_content})
 
+    tool_calls = _extract_tool_calls_openai({"tool_calls": [tool_call_deltas[i] for i in sorted(tool_call_deltas)]}) if (active_tools and tool_call_deltas) else []
     return {
         "content": final_content,
         "thinking": "".join(thinking_parts),
-        "tool_calls": _extract_tool_calls_openai({"tool_calls": [tool_call_deltas[i] for i in sorted(tool_call_deltas)]}),
+        "tool_calls": tool_calls,
         "finish_reason": finish_reason,
     }
 
@@ -2279,20 +2294,31 @@ def _persist_tool_history(messages: list[dict], response_text: str, turn_tool_ca
         })
 
 
-def _run_agent_loop(api_messages: list[dict]) -> tuple[str, str, list[dict]]:
+def _run_agent_loop(api_messages: list[dict], prompt: str = "") -> tuple[str, str, list[dict]]:
     history = list(api_messages)
     response_text = ""
     thinking_text = ""
     tools_done: list[dict] = []
-
     auto_continues = 0
+    MAX_TOOL_STEPS = 5
+    force_final = False
+
     for iteration in range(MAX_ITERATIONS):
-        if iteration == 7:
-            history.append({"role": "user", "content": "SYSTEM WARNING: You have used 7 tool iterations. Please wrap up your task and respond directly to the user without calling any more tools."})
-        elif iteration == 15:
-            history.append({"role": "user", "content": "CRITICAL SYSTEM WARNING: You are caught in a tool-calling loop! You MUST stop calling tools immediately and provide your final response to the user!"})
-            
-        result = _call_model(history)
+        if len(tools_done) >= MAX_TOOL_STEPS or iteration >= 5:
+            force_final = True
+        if len(tools_done) >= 2 and tools_done[-1]["name"] == tools_done[-2]["name"] and tools_done[-1]["args"] == tools_done[-2]["args"]:
+            force_final = True
+
+        if force_final:
+            history.append({
+                "role": "user",
+                "content": "You have gathered sufficient context from tool executions. Now synthesize all information and provide your complete, detailed final response to the user. Do not call any more tools."
+            })
+            active_tools = []
+        else:
+            active_tools = _active_tool_schemas(prompt)
+
+        result = _call_model(history, tools=active_tools)
         thinking_text += result.get("thinking", "") or ""
         if result["tool_calls"]:
             if result["content"]:
@@ -2309,7 +2335,7 @@ def _run_agent_loop(api_messages: list[dict]) -> tuple[str, str, list[dict]]:
                 tool_output = _execute_tool_with_approval(name, args)
                 tools_done.append({"name": name, "args": args, "result": tool_output})
                 tool_message = {"role": "tool", "content": tool_output, "name": name}
-                if STATE["conn_mode"] == MODE_CUSTOM:
+                if "custom" in str(STATE["conn_mode"]).lower() or STATE["conn_mode"] == MODE_CUSTOM:
                     tool_message["tool_call_id"] = tc.get("id") or f"call_{index}"
                 history.append(tool_message)
             _persist_tool_history(
@@ -2326,12 +2352,12 @@ def _run_agent_loop(api_messages: list[dict]) -> tuple[str, str, list[dict]]:
             continue
         return response_text, thinking_text, tools_done
 
-    response_text += f"\n\nAgent stopped after {MAX_ITERATIONS} tool iterations."
     return response_text, thinking_text, tools_done
 
 
 def _run_agent(prompt: str, active_context: dict | None = None) -> dict:
     clean_prompt, skill_selections, skill_injection, turn_index = _prepare_skill_turn(prompt)
+    STATE["current_prompt"] = clean_prompt
 
     _sync_tool_settings()
     memory_context = _persistent_memory_context(clean_prompt)
@@ -2345,7 +2371,7 @@ def _run_agent(prompt: str, active_context: dict | None = None) -> dict:
 
     failed = False
     try:
-        response_text, thinking_text, tools_done = _run_agent_loop(api_messages)
+        response_text, thinking_text, tools_done = _run_agent_loop(api_messages, clean_prompt)
     except Exception as exc:
         failed = True
         response_text = _format_agent_error(exc)
@@ -2379,6 +2405,7 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
     from coderai.tools.tools import reset_cancel_flag, is_execution_cancelled
     reset_cancel_flag()
     clean_prompt, skill_selections, skill_injection, turn_index = _prepare_skill_turn(prompt)
+    STATE["current_prompt"] = clean_prompt
 
     _sync_tool_settings()
     try:
@@ -2413,22 +2440,35 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
 
     failed = False
     try:
+        MAX_TOOL_STEPS = 5
+        force_final = False
+
         for iteration in range(MAX_ITERATIONS):
-            if iteration == 7:
-                history.append({"role": "user", "content": "SYSTEM WARNING: You have used 7 tool iterations. Please wrap up your task and respond directly to the user without calling any more tools."})
-            elif iteration == 15:
-                history.append({"role": "user", "content": "CRITICAL SYSTEM WARNING: You are caught in a tool-calling loop! You MUST stop calling tools immediately and provide your final response to the user!"})
-            
             if is_execution_cancelled():
                 write_event({"type": "cancelled", "message": "Execution cancelled by user."})
                 break
+
+            if len(tools_done) >= MAX_TOOL_STEPS or iteration >= 5:
+                force_final = True
+            if len(tools_done) >= 2 and tools_done[-1]["name"] == tools_done[-2]["name"] and tools_done[-1]["args"] == tools_done[-2]["args"]:
+                force_final = True
+
+            if force_final:
+                history.append({
+                    "role": "user",
+                    "content": "You have gathered sufficient context from tool executions. Now synthesize all information and provide your complete, detailed final response to the user. Do not call any more tools."
+                })
+                active_tools = []
+            else:
+                active_tools = _active_tool_schemas(clean_prompt)
+
             write_event({
                 "type": "status",
                 "message": f"Waiting for {_active_model_display()} ({iteration + 1}/{MAX_ITERATIONS}, timeout {REQUEST_TIMEOUT}s)...",
             })
             
             try:
-                result = _call_model_stream(history, write_event)
+                result = _call_model_stream(history, write_event, tools=active_tools)
             except Exception as e:
                 fallback = str(STATE.get("fallback_model", "")).strip()
                 if fallback and fallback != STATE.get("custom_api_model") and fallback != STATE.get("model"):
@@ -2441,7 +2481,7 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
                     STATE["conn_mode"] = MODE_CUSTOM
                     STATE["custom_api_model"] = fallback
                     try:
-                        result = _call_model_stream(history, write_event)
+                        result = _call_model_stream(history, write_event, tools=active_tools)
                     finally:
                         STATE["conn_mode"] = old_conn_mode
                         STATE["custom_api_model"] = old_custom
@@ -2475,7 +2515,7 @@ def _run_agent_stream(prompt: str, write_event, active_context: dict | None = No
                     tools_done.append({"name": name, "args": args, "result": tool_output})
                     write_event({"type": "tool_result", "name": name, "result": tool_output})
                     tool_message = {"role": "tool", "content": tool_output, "name": name}
-                    if STATE["conn_mode"] == MODE_CUSTOM:
+                    if "custom" in str(STATE["conn_mode"]).lower() or STATE["conn_mode"] == MODE_CUSTOM:
                         tool_message["tool_call_id"] = tc.get("id") or f"call_{index}"
                     history.append(tool_message)
                 _persist_tool_history(
