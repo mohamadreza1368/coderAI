@@ -76,3 +76,27 @@ test("message rendering uses the detector without changing message text", () => 
   for (const original of originals) assert.ok(messagesElement.innerHTML.includes(original));
   assert.deepEqual(messages.map((message) => message.content), originals);
 });
+
+test("mixed Persian and English reports with code blocks are rendered RTL", () => {
+  const mixedReport = `# Project Report
+تحلیل کامل پروژه در ادامه آورده شده است:
+- models/user.py: Handles User model, password hashing with bcrypt, email validation.
+- controllers/auth_controller.py: Handles login, registration, token verification.
+\`\`\`python
+class UserManager:
+    def __init__(self, db_session):
+        pass
+\`\`\``;
+  assert.equal(isRTL(mixedReport), true);
+});
+
+test("pure English technical reports with code blocks are rendered LTR", () => {
+  const englishReport = `# Project Overview
+The architecture is divided into modules:
+- auth.py: Handles login
+- database.py: SQLite connection
+\`\`\`python
+def connect(): pass
+\`\`\``;
+  assert.equal(isRTL(englishReport), false);
+});

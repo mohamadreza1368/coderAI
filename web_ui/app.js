@@ -266,8 +266,17 @@ function setCodeEditorContent(title, meta, content, info = "txt") {
   $("activeFile").textContent = title;
   $("fileMeta").textContent = meta;
   $("editorLanguage").textContent = language;
-  $("codeEditor").value = state.fileContent;
-  $("codeEditor").disabled = false;
+  const editorEl = $("codeEditor");
+  editorEl.value = state.fileContent;
+  editorEl.disabled = false;
+
+  const isContentRTL = isRTL(state.fileContent);
+  const isTextOrMarkdown = /^(md|markdown|txt|text|doc|rst)$/i.test(state.generatedInfo) || /\.(md|markdown|txt|doc|rst)$/i.test(title);
+  const shouldEditorRTL = isContentRTL && (isTextOrMarkdown || !language || language === "plaintext");
+  editorEl.setAttribute("dir", shouldEditorRTL ? "rtl" : "ltr");
+  editorEl.classList.toggle("rtl", shouldEditorRTL);
+  editorEl.classList.toggle("ltr", !shouldEditorRTL);
+
   $("codeEditorWrap").classList.toggle("empty", !state.fileContent);
   updateEditorLineNumbers();
   $("attachFile").disabled = !state.fileContent;
@@ -1644,9 +1653,14 @@ function renderPrompts() {
 function isRTL(text) {
   const trimmed = String(text || "").trim();
   if (!trimmed) return false;
-  const clean = trimmed.replace(/[\d\s.,!?:;"'()\[\]{}<>\/\\@#$%^&*_+=~`|-]/g, "");
+  const textWithoutCode = trimmed
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/`[^`]+`/g, "");
+  const clean = textWithoutCode.replace(/[\p{Nd}\s\p{P}\p{S}]/gu, "");
   if (!clean) return false;
   const rtlChars = clean.match(/[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g) || [];
+  if (!rtlChars.length) return false;
+  if (rtlChars.length >= 2) return true;
   return (rtlChars.length / clean.length) > 0.2;
 }
 

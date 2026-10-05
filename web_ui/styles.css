@@ -1325,6 +1325,15 @@ p, .editor-head span { color: var(--muted); font-size: 11px; }
   pointer-events: none;
   white-space: pre;
 }
+.code-editor[dir="rtl"],
+.code-editor.rtl {
+  direction: rtl !important;
+  text-align: right !important;
+  font-family: "Vazirmatn", "Segoe UI", Tahoma, -apple-system, sans-serif !important;
+  line-height: 24px !important;
+  white-space: pre-wrap !important;
+}
+
 .code-editor {
   position: absolute;
   inset: 0;
@@ -1472,15 +1481,34 @@ p, .editor-head span { color: var(--muted); font-size: 11px; }
   border-radius: 16px 16px 3px 16px;
 }
 
+.message[dir="rtl"] .message-text,
+.message.rtl .message-text {
+  direction: rtl;
+  text-align: right;
+  unicode-bidi: isolate;
+  font-family: "Vazirmatn", "Segoe UI", Tahoma, -apple-system, sans-serif;
+  line-height: 1.8;
+}
+
 .message[dir="rtl"] .tool-box,
 .message.rtl .tool-box,
 .message[dir="rtl"] pre,
-.message.rtl pre,
-.message[dir="rtl"] code,
-.message.rtl code {
-  direction: ltr;
-  text-align: left;
-  unicode-bidi: embed;
+.message.rtl pre {
+  direction: ltr !important;
+  text-align: left !important;
+  unicode-bidi: isolate !important;
+}
+
+.message[dir="rtl"] code:not(pre code),
+.message.rtl code:not(pre code) {
+  direction: ltr !important;
+  unicode-bidi: isolate !important;
+  display: inline-block !important;
+  font-family: Consolas, "SFMono-Regular", "Cascadia Mono", monospace !important;
+  padding: 1px 6px !important;
+  border-radius: 4px !important;
+  background: rgba(255, 255, 255, 0.08) !important;
+  margin: 0 2px !important;
 }
 
 .message[dir="ltr"],
